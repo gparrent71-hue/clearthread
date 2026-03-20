@@ -545,8 +545,8 @@
       <div id="step-extracting" style="display:none">
         <div class="extracting-state">
           <div class="spinner"></div>
-          <div class="extracting-text">Extracting actions, deadlines, and more…</div>
-          <div style="font-size:11px;color:var(--text-light);margin-top:6px">This usually takes 5–15 seconds</div>
+          <div class="extracting-text" id="extracting-text">Extracting actions, deadlines, and more…</div>
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px" id="extracting-sub">This usually takes 5–15 seconds</div>
         </div>
       </div>
 
@@ -780,13 +780,9 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
   ]
 }`;
 
-  // Stay under 50k input tokens/min rate limit; ~80k chars ≈ 40k tokens
-  const CHAR_LIMIT = 80000;
-  let truncated = false;
-  if (text.length > CHAR_LIMIT) {
-    text = text.slice(0, CHAR_LIMIT);
-    truncated = true;
-  }
+  // Safety limit per call — chunking handles splitting before this point
+  const CHAR_LIMIT = 380000;
+  if (text.length > CHAR_LIMIT) text = text.slice(0, CHAR_LIMIT);
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -820,7 +816,6 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
   try { parsed = JSON.parse(cleaned); }
   catch { throw new Error('Claude returned unexpected output. Please try again.'); }
 
-  if (truncated) parsed._truncated = true;
   return parsed;
 }
 
@@ -1042,6 +1037,63 @@ async function handleImportAction() {
   }
 }
 
+function splitIntoChunks(text, maxChars = 380000) {
+  // Find Outlook email boundaries: lines starting with "From:" followed by "Sent:" nearby
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+
+  if (emailStarts.length === 0) {
+    // No email structure — single chunk
+    return [text.slice(0, maxChars)];
+  }
+
+  // Extract individual email segments
+  const emails = [];
+  if (emailStarts[0] > 0) emails.push(text.slice(0, emailStarts[0])); // preamble
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    emails.push(text.slice(start, end));
+  });
+
+  // Group into chunks up to maxChars
+  const chunks = [];
+  let current = '';
+  for (const email of emails) {
+    if (email.length > maxChars) {
+      // Single oversized email — flush current, add truncated email
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(email.slice(0, maxChars));
+    } else if (current.length + email.length > maxChars) {
+      chunks.push(current);
+      current = email;
+    } else {
+      current += email;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+async function extractAllChunks(text, onProgress) {
+  const chunks = splitIntoChunks(text);
+  let allItems = [];
+  let suggestedTitle = '';
+
+  for (let i = 0; i < chunks.length; i++) {
+    onProgress(i + 1, chunks.length);
+    const result = await extractFromText(chunks[i]);
+    if (!suggestedTitle && result.suggestedTitle) suggestedTitle = result.suggestedTitle;
+    allItems = allItems.concat(result.items || []);
+  }
+
+  return { suggestedTitle, items: allItems, _chunkCount: chunks.length };
+}
+
 async function doExtraction() {
   const text = state.importTab === 'paste'
     ? document.getElementById('paste-input').value.trim()
@@ -1059,7 +1111,23 @@ async function doExtraction() {
   setImportStep('extracting');
 
   try {
-    const result = await extractFromText(text);
+    let result;
+    if (state.importTab === 'file') {
+      result = await extractAllChunks(text, (current, total) => {
+        document.getElementById('extracting-text').textContent =
+          total === 1 ? 'Extracting actions, deadlines, and more…'
+                      : `Processing chunk ${current} of ${total}…`;
+        document.getElementById('extracting-sub').textContent =
+          total === 1 ? 'This usually takes 5–15 seconds'
+                      : `Chunk ${current} of ${total} — ${Math.round(current / total * 100)}% complete`;
+      });
+      if (result._chunkCount > 1) {
+        showToast(`✓ Processed ${result._chunkCount} chunks — review items below`);
+      }
+    } else {
+      result = await extractFromText(text);
+    }
+
     state.previewItems = (result.items || []).map((item, i) => ({ ...item, _id: i }));
     state.extractedThreadName = result.suggestedTitle || 'Untitled Thread';
 
@@ -1068,7 +1136,6 @@ async function doExtraction() {
 
     renderPreview();
     setImportStep('preview');
-    if (result._truncated) showToast('File was very large — only the first ~185,000 tokens were analyzed.');
   } catch(e) {
     setImportStep('input');
     showImportError(e.message || 'Extraction failed. Please try again.');
@@ -1281,14 +1348,13 @@ function readFile(file) {
     state.fileContent = e.target.result;
     document.getElementById('file-name').textContent = `✓ ${file.name} loaded`;
 
-    // Character / truncation info
-    const CHAR_LIMIT = 80000;
+    // Character count and chunk info
     const total = state.fileContent.length;
+    const chunks = splitIntoChunks(state.fileContent);
     const sizeEl = document.getElementById('file-info-size');
-    if (total > CHAR_LIMIT) {
-      const pct = Math.round((CHAR_LIMIT / total) * 100);
-      sizeEl.textContent = `⚠ ${total.toLocaleString()} chars total — first 80,000 chars (${pct}%) will be sent to Claude`;
-      sizeEl.className = 'file-info-size truncated';
+    if (chunks.length > 1) {
+      sizeEl.textContent = `${total.toLocaleString()} chars — full file will be processed in ${chunks.length} chunks`;
+      sizeEl.className = 'file-info-size';
     } else {
       sizeEl.textContent = `${total.toLocaleString()} chars — full file will be sent to Claude`;
       sizeEl.className = 'file-info-size';
