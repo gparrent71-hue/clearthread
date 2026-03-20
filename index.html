@@ -1123,6 +1123,10 @@ async function doSave() {
   try {
     const itemsToSave = state.previewItems.map(({ _id, ...rest }) => rest);
     await saveItemsBatch(itemsToSave, threadId, threadTitle);
+    // Explicitly re-fetch items so dashboard updates immediately
+    const snap = await db.collection('clearthread_items').orderBy('createdAt', 'desc').get();
+    state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderAll();
     closeImport();
     showToast(`✓ ${itemsToSave.length} item${itemsToSave.length !== 1 ? 's' : ''} saved`, 'success');
   } catch(e) {
@@ -1303,7 +1307,7 @@ function readFile(file) {
     } else {
       emailSection.style.display = 'none';
     }
-    document.getElementById('file-info').style.display = '';
+    document.getElementById('file-info').style.display = 'block';
 
     // Pre-fill thread name from filename
     const threadName = document.getElementById('thread-name-input');
