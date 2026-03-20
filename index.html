@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClearThread</title>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f0f4f8;
+      --surface: #ffffff;
+      --surface-hover: #f8fafc;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --text-light: #94a3b8;
+      --header-h: 56px;
+      --sidebar-w: 220px;
+      --radius: 8px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+
+      --action: #2563eb;
+      --action-bg: #eff6ff;
+      --deadline: #d97706;
+      --deadline-bg: #fffbeb;
+      --waiting: #7c3aed;
+      --waiting-bg: #f5f3ff;
+      --decision: #059669;
+      --decision-bg: #ecfdf5;
+      --ambiguity: #64748b;
+      --ambiguity-bg: #f1f5f9;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      height: var(--header-h);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      flex-shrink: 0;
+      box-shadow: 0 1px 0 var(--border);
+    }
+
+    .logo {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+    .logo span { color: var(--action); }
+
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: var(--radius);
+      font-size: 13px; font-weight: 500; cursor: pointer;
+      border: none; transition: all 0.15s;
+    }
+    .btn-primary { background: var(--action); color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--surface-hover); }
+    .btn-ghost {
+      background: transparent; color: var(--text-muted);
+      border: none; padding: 6px 10px;
+    }
+    .btn-ghost:hover { background: var(--bg); color: var(--text); }
+    .btn-icon {
+      width: 34px; height: 34px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; border: 1px solid var(--border);
+      border-radius: var(--radius); cursor: pointer; color: var(--text-muted);
+      font-size: 16px; transition: all 0.15s;
+    }
+    .btn-icon:hover { background: var(--bg); color: var(--text); }
+    .btn-danger { background: #fee2e2; color: #b91c1c; border: none; }
+    .btn-danger:hover { background: #fecaca; }
+    .btn-success { background: #dcfce7; color: #166534; border: none; }
+    .btn-success:hover { background: #bbf7d0; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Layout ── */
+    .app-layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    aside {
+      width: var(--sidebar-w);
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 16px 0;
+      flex-shrink: 0;
+      overflow-y: auto;
+    }
+
+    .sidebar-section { margin-bottom: 20px; }
+    .sidebar-label {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-light);
+      padding: 0 16px; margin-bottom: 4px; display: block;
+    }
+
+    .nav-item {
+      display: flex; align-items: center; justify-content: space-between;
+      width: 100%; padding: 8px 16px;
+      background: none; border: none; cursor: pointer;
+      color: var(--text-muted); font-size: 13px; font-weight: 500;
+      text-align: left; transition: all 0.1s; border-radius: 0;
+    }
+    .nav-item:hover { background: var(--bg); color: var(--text); }
+    .nav-item.active {
+      background: var(--action-bg); color: var(--action); font-weight: 600;
+    }
+    .nav-item .cat-dot {
+      width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; flex-shrink: 0;
+    }
+    .nav-item .left { display: flex; align-items: center; }
+    .nav-count {
+      font-size: 11px; background: var(--bg); color: var(--text-muted);
+      padding: 1px 6px; border-radius: 10px; font-weight: 600;
+    }
+    .nav-item.active .nav-count { background: white; color: var(--action); }
+
+    .sidebar-divider {
+      height: 1px; background: var(--border);
+      margin: 8px 16px;
+    }
+
+    /* ── Main Content ── */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+    }
+
+    .content-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px;
+    }
+    .content-title { font-size: 16px; font-weight: 600; }
+    .content-subtitle { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+
+    /* ── Item Cards ── */
+    .items-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .item-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+      transition: box-shadow 0.15s;
+    }
+    .item-card:hover { box-shadow: var(--shadow-md); }
+    .item-card.status-done { opacity: 0.55; }
+
+    .item-card-header {
+      display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px;
+    }
+
+    .cat-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      text-transform: uppercase; flex-shrink: 0;
+    }
+    .cat-badge.action   { background: var(--action-bg);   color: var(--action); }
+    .cat-badge.deadline { background: var(--deadline-bg); color: var(--deadline); }
+    .cat-badge.waiting  { background: var(--waiting-bg);  color: var(--waiting); }
+    .cat-badge.decision { background: var(--decision-bg); color: var(--decision); }
+    .cat-badge.ambiguity { background: var(--ambiguity-bg); color: var(--ambiguity); }
+
+    .item-meta-right {
+      margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    }
+
+    .status-badge {
+      font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 0.02em;
+    }
+    .status-badge.open     { background: #dbeafe; color: #1e40af; }
+    .status-badge.done     { background: #dcfce7; color: #166534; }
+    .status-badge.snoozed  { background: #fef3c7; color: #92400e; }
+
+    .due-badge {
+      font-size: 11px; color: var(--deadline); font-weight: 500;
+      background: var(--deadline-bg); padding: 3px 8px; border-radius: 4px;
+    }
+
+    .item-description {
+      font-size: 14px; color: var(--text); line-height: 1.5; margin-bottom: 8px;
+    }
+    .item-card.status-done .item-description { text-decoration: line-through; color: var(--text-muted); }
+
+    .item-footer {
+      display: flex; align-items: center; gap: 16px; justify-content: space-between;
+    }
+    .item-info { display: flex; gap: 14px; align-items: center; color: var(--text-muted); font-size: 12px; }
+    .item-info span { display: flex; align-items: center; gap: 4px; }
+
+    .item-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
+    .item-card:hover .item-actions { opacity: 1; }
+
+    .action-btn {
+      padding: 4px 10px; font-size: 12px; font-weight: 500;
+      border-radius: 4px; cursor: pointer; border: none; transition: all 0.1s;
+    }
+    .action-btn.complete { background: #dcfce7; color: #166534; }
+    .action-btn.complete:hover { background: #bbf7d0; }
+    .action-btn.reopen   { background: #dbeafe; color: #1e40af; }
+    .action-btn.reopen:hover { background: #bfdbfe; }
+    .action-btn.edit     { background: var(--bg); color: var(--text-muted); }
+    .action-btn.edit:hover { color: var(--text); background: var(--border); }
+    .action-btn.del      { background: #fee2e2; color: #b91c1c; }
+    .action-btn.del:hover { background: #fecaca; }
+
+    .source-toggle {
+      font-size: 11px; color: var(--text-light); cursor: pointer;
+      background: none; border: none; padding: 2px 4px;
+      text-decoration: underline; text-underline-offset: 2px;
+    }
+    .source-toggle:hover { color: var(--text-muted); }
+    .source-snippet {
+      display: none; margin-top: 8px; padding: 8px 12px;
+      background: var(--bg); border-left: 3px solid var(--border);
+      font-size: 12px; color: var(--text-muted); border-radius: 0 4px 4px 0;
+      font-style: italic; line-height: 1.5;
+    }
+    .source-snippet.visible { display: block; }
+
+    /* ── Empty State ── */
+    .empty-state {
+      text-align: center; padding: 60px 20px; color: var(--text-muted);
+    }
+    .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
+    .empty-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+    .empty-body { font-size: 14px; max-width: 320px; margin: 0 auto 20px; }
+
+    /* ── Modals ── */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    }
+    .overlay.visible { opacity: 1; pointer-events: all; }
+
+    .modal {
+      background: var(--surface); border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+      width: 600px; max-width: 95vw;
+      max-height: 90vh; display: flex; flex-direction: column;
+      transform: translateY(8px) scale(0.98); transition: transform 0.2s;
+    }
+    .overlay.visible .modal { transform: translateY(0) scale(1); }
+
+    .modal-header {
+      padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .modal-title { font-size: 16px; font-weight: 700; }
+    .modal-close {
+      width: 28px; height: 28px; border: none; background: none;
+      cursor: pointer; color: var(--text-muted); font-size: 18px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 4px;
+    }
+    .modal-close:hover { background: var(--bg); color: var(--text); }
+
+    .modal-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
+    .modal-footer {
+      padding: 16px 24px; border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0;
+    }
+
+    /* ── Form elements ── */
+    .form-group { margin-bottom: 16px; }
+    .form-label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    .form-control {
+      width: 100%; padding: 9px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); font-size: 14px; color: var(--text);
+      background: var(--surface); outline: none; transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    .form-control:focus { border-color: var(--action); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    textarea.form-control { resize: vertical; min-height: 160px; }
+    select.form-control { cursor: pointer; }
+
+    /* ── Import modal tabs ── */
+    .tab-bar {
+      display: flex; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+    }
+    .tab-btn {
+      padding: 8px 16px; font-size: 13px; font-weight: 500;
+      background: none; border: none; cursor: pointer; color: var(--text-muted);
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab-btn.active { color: var(--action); border-bottom-color: var(--action); }
+
+    /* ── Upload area ── */
+    .upload-area {
+      border: 2px dashed var(--border); border-radius: var(--radius);
+      padding: 32px 20px; text-align: center; cursor: pointer;
+      transition: all 0.15s; color: var(--text-muted);
+    }
+    .upload-area:hover, .upload-area.drag-over {
+      border-color: var(--action); background: var(--action-bg); color: var(--action);
+    }
+    .upload-icon { font-size: 32px; margin-bottom: 8px; }
+    .upload-label { font-size: 14px; font-weight: 500; }
+    .upload-hint { font-size: 12px; margin-top: 4px; }
+    #file-input { display: none; }
+
+    /* ── Extraction loading ── */
+    .extracting-state { text-align: center; padding: 32px 20px; }
+    .spinner {
+      width: 40px; height: 40px; margin: 0 auto 16px;
+      border: 3px solid var(--border); border-top-color: var(--action);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .extracting-text { font-size: 14px; color: var(--text-muted); }
+
+    /* ── Preview items ── */
+    .preview-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 12px;
+    }
+    .preview-count { font-size: 13px; color: var(--text-muted); }
+
+    .preview-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); margin-bottom: 8px; background: var(--surface);
+    }
+    .preview-item-body { flex: 1; min-width: 0; }
+    .preview-item-desc { font-size: 13px; color: var(--text); margin: 4px 0; }
+    .preview-item-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 10px; }
+    .preview-delete {
+      background: none; border: none; cursor: pointer; color: var(--text-light);
+      font-size: 16px; padding: 2px; flex-shrink: 0; line-height: 1;
+    }
+    .preview-delete:hover { color: #b91c1c; }
+
+    /* ── API key visibility toggle ── */
+    .key-input-wrap { position: relative; }
+    .key-toggle {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: #1e293b; color: white; padding: 10px 20px;
+      border-radius: 8px; font-size: 13px; font-weight: 500;
+      opacity: 0; transition: all 0.25s; z-index: 999; pointer-events: none;
+      box-shadow: var(--shadow-md);
+    }
+    #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #toast.error { background: #b91c1c; }
+    #toast.success { background: #166534; }
+
+    /* ── Error banner ── */
+    .error-banner {
+      background: #fee2e2; border: 1px solid #fca5a5; color: #b91c1c;
+      padding: 10px 14px; border-radius: var(--radius); font-size: 13px;
+      margin-bottom: 12px; display: none;
+    }
+    .error-banner.visible { display: block; }
+
+    /* ── Notes field in edit modal ── */
+    .item-notes {
+      font-size: 12px; color: var(--text-muted); font-style: italic;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══ -->
+<header>
+  <div class="logo">Clear<span>Thread</span></div>
+  <div class="header-actions">
+    <button class="btn btn-primary" id="btn-import">＋ Import Thread</button>
+    <button class="btn-icon" id="btn-settings" title="Settings">⚙</button>
+  </div>
+</header>
+
+<!-- ═══ APP LAYOUT ═══ -->
+<div class="app-layout">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <span class="sidebar-label">Category</span>
+    <nav>
+      <button class="nav-item active" data-filter-cat="all">
+        <span class="left">All Items</span>
+        <span class="nav-count" id="count-all">0</span>
+      </button>
+      <button class="nav-item" data-filter-cat="action">
+        <span class="left"><span class="cat-dot" style="background:var(--action)"></span>Actions</span>
+        <span class="nav-count" id="count-action">0</span>
+      </button>
+      <button class="nav-item" data-filter-cat="deadline">
+        <span class="left"><span class="cat-dot" style="background:var(--deadline)"></span>Deadlines</span>
+        <span class="nav-count" id="count-deadline">0</span>
+      </button>
+      <button class="nav-item" data-filter-cat="waiting">
+        <span class="left"><span class="cat-dot" style="background:var(--waiting)"></span>Waiting On</span>
+        <span class="nav-count" id="count-waiting">0</span>
+      </button>
+      <button class="nav-item" data-filter-cat="decision">
+        <span class="left"><span class="cat-dot" style="background:var(--decision)"></span>Decisions</span>
+        <span class="nav-count" id="count-decision">0</span>
+      </button>
+      <button class="nav-item" data-filter-cat="ambiguity">
+        <span class="left"><span class="cat-dot" style="background:var(--ambiguity)"></span>Ambiguities</span>
+        <span class="nav-count" id="count-ambiguity">0</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-divider"></div>
+
+    <span class="sidebar-label">Status</span>
+    <nav>
+      <button class="nav-item active" data-filter-status="open">Open</button>
+      <button class="nav-item" data-filter-status="done">Done</button>
+      <button class="nav-item" data-filter-status="snoozed">Snoozed</button>
+      <button class="nav-item" data-filter-status="all">All</button>
+    </nav>
+  </aside>
+
+  <!-- Main Content -->
+  <main>
+    <div class="content-header">
+      <div>
+        <div class="content-title" id="view-title">All Open Items</div>
+        <div class="content-subtitle" id="view-subtitle">Loading…</div>
+      </div>
+    </div>
+    <div id="items-container"></div>
+  </main>
+</div>
+
+<!-- ═══ IMPORT MODAL ═══ -->
+<div class="overlay" id="import-overlay">
+  <div class="modal" style="width:640px">
+    <div class="modal-header">
+      <span class="modal-title" id="import-modal-title">Import Thread</span>
+      <button class="modal-close" id="import-close">✕</button>
+    </div>
+    <div class="modal-body" id="import-body">
+
+      <!-- Step 1: Input -->
+      <div id="step-input">
+        <div class="error-banner" id="import-error"></div>
+        <div class="tab-bar">
+          <button class="tab-btn active" id="tab-paste">Paste Text</button>
+          <button class="tab-btn" id="tab-file">Upload File</button>
+        </div>
+
+        <div id="pane-paste">
+          <div class="form-group">
+            <textarea class="form-control" id="paste-input"
+              placeholder="Paste your email chain or meeting notes here…" style="min-height:200px"></textarea>
+          </div>
+        </div>
+
+        <div id="pane-file" style="display:none">
+          <div class="upload-area" id="upload-area">
+            <div class="upload-icon">📄</div>
+            <div class="upload-label">Drop a .txt file here, or click to browse</div>
+            <div class="upload-hint">Supports .txt files (email chains, meeting notes)</div>
+            <input type="file" id="file-input" accept=".txt">
+          </div>
+          <div id="file-name" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+        </div>
+
+        <div class="form-group" style="margin-top:16px">
+          <label class="form-label">Thread Name (optional — Claude will suggest one)</label>
+          <input type="text" class="form-control" id="thread-name-input"
+            placeholder="e.g. Client kickoff call, Q2 budget review…">
+        </div>
+
+        <div id="no-key-warning" style="display:none;background:#fff7ed;border:1px solid #fed7aa;color:#92400e;padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-top:4px">
+          ⚠ No Claude API key set. <button onclick="openSettings()" style="background:none;border:none;color:#92400e;text-decoration:underline;cursor:pointer;font-size:13px">Add one in Settings</button> to enable extraction.
+        </div>
+      </div>
+
+      <!-- Step 2: Extracting -->
+      <div id="step-extracting" style="display:none">
+        <div class="extracting-state">
+          <div class="spinner"></div>
+          <div class="extracting-text">Extracting actions, deadlines, and more…</div>
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px">This usually takes 5–15 seconds</div>
+        </div>
+      </div>
+
+      <!-- Step 3: Preview -->
+      <div id="step-preview" style="display:none">
+        <div class="form-group">
+          <label class="form-label">Thread Name</label>
+          <input type="text" class="form-control" id="preview-thread-name">
+        </div>
+        <div class="preview-header">
+          <span style="font-size:13px;font-weight:600">Extracted Items</span>
+          <span class="preview-count" id="preview-count">0 items</span>
+        </div>
+        <div id="preview-list"></div>
+      </div>
+    </div>
+
+    <div class="modal-footer" id="import-footer">
+      <button class="btn btn-secondary" id="import-cancel">Cancel</button>
+      <button class="btn btn-primary" id="import-action">Extract with Claude</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ EDIT MODAL ═══ -->
+<div class="overlay" id="edit-overlay">
+  <div class="modal" style="width:520px">
+    <div class="modal-header">
+      <span class="modal-title">Edit Item</span>
+      <button class="modal-close" id="edit-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="edit-id">
+      <div class="form-group">
+        <label class="form-label">Category</label>
+        <select class="form-control" id="edit-category">
+          <option value="action">Action</option>
+          <option value="deadline">Deadline</option>
+          <option value="waiting">Waiting On</option>
+          <option value="decision">Decision</option>
+          <option value="ambiguity">Ambiguity</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea class="form-control" id="edit-description" style="min-height:90px"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Owner</label>
+          <input type="text" class="form-control" id="edit-owner" placeholder="e.g. John, Sarah">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Due Date</label>
+          <input type="text" class="form-control" id="edit-due" placeholder="e.g. Friday, March 31">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Status</label>
+        <select class="form-control" id="edit-status">
+          <option value="open">Open</option>
+          <option value="done">Done</option>
+          <option value="snoozed">Snoozed</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes</label>
+        <textarea class="form-control" id="edit-notes" style="min-height:70px"
+          placeholder="Any additional context…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="edit-cancel">Cancel</button>
+      <button class="btn btn-primary" id="edit-save">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<div class="overlay" id="settings-overlay">
+  <div class="modal" style="width:460px">
+    <div class="modal-header">
+      <span class="modal-title">Settings</span>
+      <button class="modal-close" id="settings-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Claude API Key</label>
+        <div class="key-input-wrap">
+          <input type="password" class="form-control" id="api-key-input"
+            placeholder="sk-ant-…" style="padding-right:40px">
+          <button class="key-toggle" id="key-toggle">👁</button>
+        </div>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          Your key is stored only in this browser's localStorage and never sent anywhere except Anthropic's API.
+          Get a key at <strong>console.anthropic.com</strong> → API Keys.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Model</label>
+        <select class="form-control" id="model-select">
+          <option value="claude-opus-4-6">Claude Opus 4.6 (most capable)</option>
+          <option value="claude-haiku-4-5">Claude Haiku 4.5 (fastest, lowest cost)</option>
+        </select>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          Opus 4.6: ~$0.01–0.05 per thread. Haiku 4.5: ~$0.001–0.005 per thread.
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="settings-cancel">Cancel</button>
+      <button class="btn btn-primary" id="settings-save">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- ═══ JAVASCRIPT ═══ -->
+<script>
+// ─────────────────────────────────────────────
+// Firebase Config
+// ─────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyDeXbtC_hUNZJnNRZWaOo9UjGe0WVVWty0",
+  authDomain: "milestone-tracker-955f4.firebaseapp.com",
+  projectId: "milestone-tracker-955f4",
+  storageBucket: "milestone-tracker-955f4.firebasestorage.app",
+  messagingSenderId: "359863264645",
+  appId: "1:359863264645:web:489bcb87327ed73c0190ec"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// ─────────────────────────────────────────────
+// App State
+// ─────────────────────────────────────────────
+const state = {
+  items: [],
+  filterCat: 'all',
+  filterStatus: 'open',
+  apiKey: localStorage.getItem('clearthread_api_key') || '',
+  model: localStorage.getItem('clearthread_model') || 'claude-opus-4-6',
+  previewItems: [],
+  extractedThreadName: '',
+  importStep: 'input',   // 'input' | 'extracting' | 'preview'
+  importTab: 'paste',    // 'paste' | 'file'
+  fileContent: null,
+};
+
+// ─────────────────────────────────────────────
+// Firestore Helpers
+// ─────────────────────────────────────────────
+function listenItems() {
+  db.collection('clearthread_items')
+    .orderBy('createdAt', 'desc')
+    .onSnapshot(snap => {
+      state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderAll();
+    }, err => {
+      console.error('Firestore error:', err);
+      showToast('Database connection error', 'error');
+    });
+}
+
+async function saveItemsBatch(items, threadId, threadTitle) {
+  const batch = db.batch();
+  // Save thread record
+  const threadRef = db.collection('clearthread_threads').doc(threadId);
+  batch.set(threadRef, { title: threadTitle, importedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  // Save items
+  items.forEach(item => {
+    const ref = db.collection('clearthread_items').doc();
+    batch.set(ref, {
+      ...item,
+      threadId,
+      threadTitle,
+      status: 'open',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+}
+
+async function updateItem(id, data) {
+  await db.collection('clearthread_items').doc(id).update(data);
+}
+
+async function deleteItem(id) {
+  await db.collection('clearthread_items').doc(id).delete();
+}
+
+// ─────────────────────────────────────────────
+// Claude API Extraction
+// ─────────────────────────────────────────────
+async function extractFromText(text) {
+  const apiKey = state.apiKey;
+  if (!apiKey) throw new Error('No API key set. Please add your Claude API key in Settings.');
+
+  const systemPrompt = `You are an expert at extracting actionable information from email threads and meeting notes.
+
+Analyze the provided text and extract ALL items into exactly these five categories:
+- "action": specific tasks or work items someone needs to do
+- "deadline": time-bound commitments, due dates, or scheduled events
+- "waiting": items pending someone else's response, decision, or delivery
+- "decision": choices, approvals, or go/no-go calls that still need to be made
+- "ambiguity": unclear statements, missing information, or items needing clarification before action
+
+For each item extract:
+- category: one of the five above
+- description: clear, concise description (1–2 sentences, written as a standalone item)
+- owner: the person responsible or who needs to act (first name or full name if mentioned, null if unclear)
+- dueDate: due date if mentioned (natural language: "Friday", "EOD March 31", etc., null if none)
+- sourceSnippet: the exact quote or near-quote from the source text that led to this item (max 150 chars)
+
+Be thorough — capture everything actionable, time-sensitive, or ambiguous. Do not miss items.
+
+Return ONLY valid JSON, no prose, no markdown fences. Format:
+{
+  "suggestedTitle": "5–8 word descriptive title for this thread",
+  "items": [
+    {
+      "category": "action",
+      "description": "...",
+      "owner": "...",
+      "dueDate": null,
+      "sourceSnippet": "..."
+    }
+  ]
+}`;
+
+  // Conservative limit: ~3 chars/token for dense content; target 185k tokens max
+  const CHAR_LIMIT = 550000;
+  let truncated = false;
+  if (text.length > CHAR_LIMIT) {
+    text = text.slice(0, CHAR_LIMIT);
+    truncated = true;
+  }
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: state.model,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: text }],
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const msg = err?.error?.message || `API error ${resp.status}`;
+    throw new Error(msg);
+  }
+
+  const data = await resp.json();
+  const raw = data.content?.[0]?.text || '';
+
+  // Strip markdown fences if present
+  const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/,'').trim();
+
+  let parsed;
+  try { parsed = JSON.parse(cleaned); }
+  catch { throw new Error('Claude returned unexpected output. Please try again.'); }
+
+  if (truncated) parsed._truncated = true;
+  return parsed;
+}
+
+// ─────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────
+const CAT_LABELS = {
+  action: 'Action', deadline: 'Deadline',
+  waiting: 'Waiting On', decision: 'Decision', ambiguity: 'Ambiguity'
+};
+
+function getFilteredItems() {
+  return state.items.filter(item => {
+    const catMatch = state.filterCat === 'all' || item.category === state.filterCat;
+    const statusMatch = state.filterStatus === 'all' || item.status === state.filterStatus;
+    return catMatch && statusMatch;
+  });
+}
+
+function renderAll() {
+  renderCounts();
+  renderItems();
+  renderViewTitle();
+}
+
+function renderCounts() {
+  const openItems = state.items.filter(i => i.status !== 'done');
+  document.getElementById('count-all').textContent     = openItems.length;
+  document.getElementById('count-action').textContent  = openItems.filter(i => i.category === 'action').length;
+  document.getElementById('count-deadline').textContent= openItems.filter(i => i.category === 'deadline').length;
+  document.getElementById('count-waiting').textContent = openItems.filter(i => i.category === 'waiting').length;
+  document.getElementById('count-decision').textContent= openItems.filter(i => i.category === 'decision').length;
+  document.getElementById('count-ambiguity').textContent= openItems.filter(i => i.category === 'ambiguity').length;
+}
+
+function renderViewTitle() {
+  const catName = state.filterCat === 'all' ? 'All Items' : CAT_LABELS[state.filterCat];
+  const statusName = state.filterStatus === 'all' ? '' : state.filterStatus.charAt(0).toUpperCase() + state.filterStatus.slice(1) + ' ';
+  document.getElementById('view-title').textContent = `${statusName}${catName}`;
+  const count = getFilteredItems().length;
+  document.getElementById('view-subtitle').textContent = count === 0 ? 'No items' : `${count} item${count !== 1 ? 's' : ''}`;
+}
+
+function renderItems() {
+  const container = document.getElementById('items-container');
+  const items = getFilteredItems();
+
+  if (items.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <div class="empty-title">${state.items.length === 0 ? 'Nothing here yet' : 'No items match this filter'}</div>
+        <div class="empty-body">${state.items.length === 0
+          ? 'Import an email chain or meeting notes to extract your first action items.'
+          : 'Try a different category or status filter.'}</div>
+        ${state.items.length === 0 ? '<button class="btn btn-primary" onclick="openImport()">＋ Import Thread</button>' : ''}
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="items-list">${items.map(renderItemCard).join('')}</div>`;
+}
+
+function renderItemCard(item) {
+  const isDone = item.status === 'done';
+  const dueHtml = item.dueDate
+    ? `<span class="due-badge">📅 ${escHtml(item.dueDate)}</span>`
+    : '';
+  const ownerHtml = item.owner
+    ? `<span>👤 ${escHtml(item.owner)}</span>` : '';
+  const threadHtml = item.threadTitle
+    ? `<span>📎 ${escHtml(item.threadTitle)}</span>` : '';
+  const notesHtml = item.notes
+    ? `<div class="item-notes">💬 ${escHtml(item.notes)}</div>` : '';
+  const completeBtn = isDone
+    ? `<button class="action-btn reopen" onclick="markStatus('${item.id}','open')">Reopen</button>`
+    : `<button class="action-btn complete" onclick="markStatus('${item.id}','done')">✓ Done</button>`;
+
+  return `
+    <div class="item-card status-${item.status}" id="card-${item.id}">
+      <div class="item-card-header">
+        <span class="cat-badge ${item.category}">${CAT_LABELS[item.category]}</span>
+        ${dueHtml}
+        <div class="item-meta-right">
+          <span class="status-badge ${item.status}">${item.status}</span>
+        </div>
+      </div>
+      <div class="item-description">${escHtml(item.description)}</div>
+      ${notesHtml}
+      <div class="item-footer">
+        <div class="item-info">
+          ${ownerHtml}${threadHtml}
+          ${item.sourceSnippet
+            ? `<button class="source-toggle" onclick="toggleSource(this)">view source</button>`
+            : ''}
+        </div>
+        <div class="item-actions">
+          ${completeBtn}
+          <button class="action-btn edit" onclick="openEdit('${item.id}')">Edit</button>
+          <button class="action-btn del" onclick="confirmDelete('${item.id}')">Delete</button>
+        </div>
+      </div>
+      ${item.sourceSnippet
+        ? `<div class="source-snippet">"${escHtml(item.sourceSnippet)}"</div>`
+        : ''}
+    </div>`;
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+// ─────────────────────────────────────────────
+// Item Actions
+// ─────────────────────────────────────────────
+async function markStatus(id, status) {
+  try {
+    await updateItem(id, { status });
+    showToast(status === 'done' ? '✓ Marked as done' : 'Reopened', 'success');
+  } catch(e) { showToast('Error updating item', 'error'); }
+}
+
+async function confirmDelete(id) {
+  if (!confirm('Delete this item?')) return;
+  try {
+    await deleteItem(id);
+    showToast('Item deleted');
+  } catch(e) { showToast('Error deleting item', 'error'); }
+}
+
+function toggleSource(btn) {
+  const card = btn.closest('.item-card');
+  const snippet = card.querySelector('.source-snippet');
+  if (!snippet) return;
+  snippet.classList.toggle('visible');
+  btn.textContent = snippet.classList.contains('visible') ? 'hide source' : 'view source';
+}
+
+// ─────────────────────────────────────────────
+// Import Modal
+// ─────────────────────────────────────────────
+function openImport() {
+  resetImport();
+  document.getElementById('import-overlay').classList.add('visible');
+  checkApiKey();
+}
+
+function closeImport() {
+  document.getElementById('import-overlay').classList.remove('visible');
+}
+
+function checkApiKey() {
+  const warn = document.getElementById('no-key-warning');
+  warn.style.display = state.apiKey ? 'none' : 'block';
+}
+
+function resetImport() {
+  setImportStep('input');
+  document.getElementById('paste-input').value = '';
+  document.getElementById('thread-name-input').value = '';
+  document.getElementById('file-name').textContent = '';
+  document.getElementById('import-error').textContent = '';
+  document.getElementById('import-error').classList.remove('visible');
+  document.getElementById('file-input').value = '';
+  state.fileContent = null;
+  state.previewItems = [];
+  setImportTab('paste');
+}
+
+function setImportStep(step) {
+  state.importStep = step;
+  document.getElementById('step-input').style.display     = step === 'input'      ? '' : 'none';
+  document.getElementById('step-extracting').style.display= step === 'extracting' ? '' : 'none';
+  document.getElementById('step-preview').style.display   = step === 'preview'    ? '' : 'none';
+
+  const actionBtn = document.getElementById('import-action');
+  const footer = document.getElementById('import-footer');
+  const title = document.getElementById('import-modal-title');
+
+  if (step === 'input') {
+    actionBtn.textContent = 'Extract with Claude';
+    actionBtn.disabled = false;
+    footer.style.display = '';
+    title.textContent = 'Import Thread';
+  } else if (step === 'extracting') {
+    footer.style.display = 'none';
+    title.textContent = 'Extracting…';
+  } else if (step === 'preview') {
+    actionBtn.textContent = `Save ${state.previewItems.length} Item${state.previewItems.length !== 1 ? 's' : ''} to Dashboard`;
+    actionBtn.disabled = false;
+    footer.style.display = '';
+    title.textContent = 'Review Extracted Items';
+  }
+}
+
+function setImportTab(tab) {
+  state.importTab = tab;
+  document.getElementById('pane-paste').style.display = tab === 'paste' ? '' : 'none';
+  document.getElementById('pane-file').style.display  = tab === 'file'  ? '' : 'none';
+  document.getElementById('tab-paste').classList.toggle('active', tab === 'paste');
+  document.getElementById('tab-file').classList.toggle('active',  tab === 'file');
+}
+
+function showImportError(msg) {
+  const el = document.getElementById('import-error');
+  el.textContent = msg;
+  el.classList.add('visible');
+}
+
+async function handleImportAction() {
+  if (state.importStep === 'input') {
+    await doExtraction();
+  } else if (state.importStep === 'preview') {
+    await doSave();
+  }
+}
+
+async function doExtraction() {
+  const text = state.importTab === 'paste'
+    ? document.getElementById('paste-input').value.trim()
+    : state.fileContent;
+
+  if (!text) {
+    showImportError('Please paste some text or upload a file first.');
+    return;
+  }
+  if (!state.apiKey) {
+    showImportError('Please add your Claude API key in Settings first.');
+    return;
+  }
+
+  setImportStep('extracting');
+
+  try {
+    const result = await extractFromText(text);
+    state.previewItems = (result.items || []).map((item, i) => ({ ...item, _id: i }));
+    state.extractedThreadName = result.suggestedTitle || 'Untitled Thread';
+
+    const userTitle = document.getElementById('thread-name-input').value.trim();
+    document.getElementById('preview-thread-name').value = userTitle || state.extractedThreadName;
+
+    renderPreview();
+    setImportStep('preview');
+    if (result._truncated) showToast('File was very large — only the first ~185,000 tokens were analyzed.');
+  } catch(e) {
+    setImportStep('input');
+    showImportError(e.message || 'Extraction failed. Please try again.');
+  }
+}
+
+function renderPreview() {
+  const list = document.getElementById('preview-list');
+  document.getElementById('preview-count').textContent = `${state.previewItems.length} item${state.previewItems.length !== 1 ? 's' : ''} found`;
+
+  if (state.previewItems.length === 0) {
+    list.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px">No items were extracted. Try importing a different thread.</div>';
+    return;
+  }
+
+  list.innerHTML = state.previewItems.map(item => `
+    <div class="preview-item" id="preview-${item._id}">
+      <div class="preview-item-body">
+        <span class="cat-badge ${item.category}" style="font-size:10px">${CAT_LABELS[item.category]}</span>
+        <div class="preview-item-desc">${escHtml(item.description)}</div>
+        <div class="preview-item-meta">
+          ${item.owner ? `<span>👤 ${escHtml(item.owner)}</span>` : ''}
+          ${item.dueDate ? `<span>📅 ${escHtml(item.dueDate)}</span>` : ''}
+          ${item.sourceSnippet ? `<span title="${escHtml(item.sourceSnippet)}">📌 has source</span>` : ''}
+        </div>
+      </div>
+      <button class="preview-delete" onclick="removePreviewItem(${item._id})" title="Remove this item">✕</button>
+    </div>
+  `).join('');
+}
+
+function removePreviewItem(id) {
+  state.previewItems = state.previewItems.filter(i => i._id !== id);
+  renderPreview();
+  const actionBtn = document.getElementById('import-action');
+  actionBtn.textContent = `Save ${state.previewItems.length} Item${state.previewItems.length !== 1 ? 's' : ''} to Dashboard`;
+  document.getElementById('import-modal-title').textContent = `Review Extracted Items (${state.previewItems.length})`;
+}
+
+async function doSave() {
+  if (state.previewItems.length === 0) {
+    showToast('No items to save', 'error');
+    return;
+  }
+
+  const threadTitle = document.getElementById('preview-thread-name').value.trim() || state.extractedThreadName;
+  const threadId = 'thread_' + Date.now();
+  const btn = document.getElementById('import-action');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    const itemsToSave = state.previewItems.map(({ _id, ...rest }) => rest);
+    await saveItemsBatch(itemsToSave, threadId, threadTitle);
+    closeImport();
+    showToast(`✓ ${itemsToSave.length} item${itemsToSave.length !== 1 ? 's' : ''} saved`, 'success');
+  } catch(e) {
+    btn.disabled = false;
+    setImportStep('preview');
+    showImportError('Error saving items: ' + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Edit Modal
+// ─────────────────────────────────────────────
+function openEdit(id) {
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+
+  document.getElementById('edit-id').value          = id;
+  document.getElementById('edit-category').value    = item.category || 'action';
+  document.getElementById('edit-description').value = item.description || '';
+  document.getElementById('edit-owner').value       = item.owner || '';
+  document.getElementById('edit-due').value         = item.dueDate || '';
+  document.getElementById('edit-status').value      = item.status || 'open';
+  document.getElementById('edit-notes').value       = item.notes || '';
+
+  document.getElementById('edit-overlay').classList.add('visible');
+}
+
+function closeEdit() {
+  document.getElementById('edit-overlay').classList.remove('visible');
+}
+
+async function saveEdit() {
+  const id = document.getElementById('edit-id').value;
+  const data = {
+    category:    document.getElementById('edit-category').value,
+    description: document.getElementById('edit-description').value.trim(),
+    owner:       document.getElementById('edit-owner').value.trim() || null,
+    dueDate:     document.getElementById('edit-due').value.trim() || null,
+    status:      document.getElementById('edit-status').value,
+    notes:       document.getElementById('edit-notes').value.trim() || null,
+  };
+
+  if (!data.description) { showToast('Description cannot be empty', 'error'); return; }
+
+  const btn = document.getElementById('edit-save');
+  btn.disabled = true;
+  try {
+    await updateItem(id, data);
+    closeEdit();
+    showToast('✓ Item updated', 'success');
+  } catch(e) {
+    showToast('Error saving: ' + e.message, 'error');
+  } finally { btn.disabled = false; }
+}
+
+// ─────────────────────────────────────────────
+// Settings Modal
+// ─────────────────────────────────────────────
+function openSettings() {
+  document.getElementById('api-key-input').value = state.apiKey;
+  document.getElementById('model-select').value  = state.model;
+  document.getElementById('settings-overlay').classList.add('visible');
+}
+
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('visible');
+}
+
+function saveSettings() {
+  const key   = document.getElementById('api-key-input').value.trim();
+  const model = document.getElementById('model-select').value;
+  state.apiKey = key;
+  state.model  = model;
+  localStorage.setItem('clearthread_api_key', key);
+  localStorage.setItem('clearthread_model', model);
+  closeSettings();
+  showToast('✓ Settings saved', 'success');
+}
+
+// ─────────────────────────────────────────────
+// Toast
+// ─────────────────────────────────────────────
+let toastTimer;
+function showToast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'visible ' + (type === 'error' ? 'error' : type === 'success' ? 'success' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('visible'), 2800);
+}
+
+// ─────────────────────────────────────────────
+// Event Listeners
+// ─────────────────────────────────────────────
+// Import
+document.getElementById('btn-import').addEventListener('click', openImport);
+document.getElementById('import-close').addEventListener('click', closeImport);
+document.getElementById('import-cancel').addEventListener('click', () => {
+  if (state.importStep === 'preview') { setImportStep('input'); }
+  else { closeImport(); }
+});
+document.getElementById('import-action').addEventListener('click', handleImportAction);
+
+document.getElementById('tab-paste').addEventListener('click', () => setImportTab('paste'));
+document.getElementById('tab-file').addEventListener('click',  () => setImportTab('file'));
+
+// File upload
+const uploadArea = document.getElementById('upload-area');
+const fileInput  = document.getElementById('file-input');
+
+uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadArea.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) readFile(file);
+});
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) readFile(e.target.files[0]);
+});
+
+function readFile(file) {
+  if (!file.name.endsWith('.txt')) {
+    showToast('Please upload a .txt file', 'error');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = e => {
+    state.fileContent = e.target.result;
+    document.getElementById('file-name').textContent = `✓ ${file.name} loaded`;
+    // Pre-fill thread name from filename
+    const threadName = document.getElementById('thread-name-input');
+    if (!threadName.value) {
+      threadName.value = file.name.replace(/\.txt$/i, '').replace(/[-_]/g, ' ');
+    }
+  };
+  reader.readAsText(file);
+}
+
+// Edit modal
+document.getElementById('edit-close').addEventListener('click', closeEdit);
+document.getElementById('edit-cancel').addEventListener('click', closeEdit);
+document.getElementById('edit-save').addEventListener('click', saveEdit);
+
+// Settings modal
+document.getElementById('btn-settings').addEventListener('click', openSettings);
+document.getElementById('settings-close').addEventListener('click', closeSettings);
+document.getElementById('settings-cancel').addEventListener('click', closeSettings);
+document.getElementById('settings-save').addEventListener('click', saveSettings);
+
+// API key show/hide toggle
+document.getElementById('key-toggle').addEventListener('click', () => {
+  const inp = document.getElementById('api-key-input');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+});
+
+// Close overlays on backdrop click
+['import-overlay','edit-overlay','settings-overlay'].forEach(id => {
+  document.getElementById(id).addEventListener('click', e => {
+    if (e.target.id === id) document.getElementById(id).classList.remove('visible');
+  });
+});
+
+// Sidebar filters – category
+document.querySelectorAll('[data-filter-cat]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-filter-cat]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.filterCat = btn.dataset.filterCat;
+    renderAll();
+  });
+});
+
+// Sidebar filters – status
+document.querySelectorAll('[data-filter-status]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-filter-status]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.filterStatus = btn.dataset.filterStatus;
+    renderAll();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────
+listenItems();
+
+// Prompt settings if no API key
+if (!state.apiKey) {
+  setTimeout(() => showToast('Add your Claude API key in ⚙ Settings to get started'), 1500);
+}
+</script>
+</body>
+</html>
