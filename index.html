@@ -371,6 +371,22 @@
     }
     .preview-delete:hover { color: #b91c1c; }
 
+    /* ── File info panel ── */
+    #file-info {
+      display: none; margin-top: 10px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 10px 12px; font-size: 12px;
+    }
+    .file-info-size { color: var(--text-muted); margin-bottom: 6px; }
+    .file-info-size.truncated { color: #92400e; }
+    .file-info-email { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
+    .file-info-email-label {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; color: var(--text-light); margin-bottom: 5px;
+    }
+    .file-info-row { display: flex; gap: 6px; margin-bottom: 3px; color: var(--text-muted); }
+    .file-info-row strong { color: var(--text); min-width: 52px; flex-shrink: 0; }
+
     /* ── API key visibility toggle ── */
     .key-input-wrap { position: relative; }
     .key-toggle {
@@ -505,6 +521,13 @@
             <input type="file" id="file-input" accept=".txt">
           </div>
           <div id="file-name" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+          <div id="file-info">
+            <div class="file-info-size" id="file-info-size"></div>
+            <div class="file-info-email" id="file-info-email" style="display:none">
+              <div class="file-info-email-label">Last Email in Thread</div>
+              <div id="file-info-email-rows"></div>
+            </div>
+          </div>
         </div>
 
         <div class="form-group" style="margin-top:16px">
@@ -965,6 +988,7 @@ function resetImport() {
   document.getElementById('import-error').textContent = '';
   document.getElementById('import-error').classList.remove('visible');
   document.getElementById('file-input').value = '';
+  document.getElementById('file-info').style.display = 'none';
   state.fileContent = null;
   state.previewItems = [];
   setImportTab('paste');
@@ -1222,6 +1246,27 @@ fileInput.addEventListener('change', e => {
   if (e.target.files[0]) readFile(e.target.files[0]);
 });
 
+function parseLastEmail(text) {
+  // Outlook .txt export format: From / Sent / To / (Cc) / Subject block
+  // Find all positions of "From:" headers that are followed by "Sent:" within ~400 chars
+  const fromRe = /^From:\s*(.+)$/gim;
+  let lastBlock = null;
+  let m;
+  while ((m = fromRe.exec(text)) !== null) {
+    const seg = text.slice(m.index, m.index + 600);
+    const sentMatch   = seg.match(/^Sent:\s*(.+)$/im);
+    const subjectMatch = seg.match(/^Subject:\s*(.+)$/im);
+    if (sentMatch) {
+      lastBlock = {
+        from:    m[1].trim(),
+        sent:    sentMatch[1].trim(),
+        subject: subjectMatch ? subjectMatch[1].trim() : null,
+      };
+    }
+  }
+  return lastBlock;
+}
+
 function readFile(file) {
   if (!file.name.endsWith('.txt')) {
     showToast('Please upload a .txt file', 'error');
@@ -1231,6 +1276,35 @@ function readFile(file) {
   reader.onload = e => {
     state.fileContent = e.target.result;
     document.getElementById('file-name').textContent = `✓ ${file.name} loaded`;
+
+    // Character / truncation info
+    const CHAR_LIMIT = 80000;
+    const total = state.fileContent.length;
+    const sizeEl = document.getElementById('file-info-size');
+    if (total > CHAR_LIMIT) {
+      const pct = Math.round((CHAR_LIMIT / total) * 100);
+      sizeEl.textContent = `⚠ ${total.toLocaleString()} chars total — first 80,000 chars (${pct}%) will be sent to Claude`;
+      sizeEl.className = 'file-info-size truncated';
+    } else {
+      sizeEl.textContent = `${total.toLocaleString()} chars — full file will be sent to Claude`;
+      sizeEl.className = 'file-info-size';
+    }
+
+    // Last email details
+    const email = parseLastEmail(state.fileContent);
+    const emailSection = document.getElementById('file-info-email');
+    const emailRows    = document.getElementById('file-info-email-rows');
+    if (email) {
+      const row = (label, val) => val
+        ? `<div class="file-info-row"><strong>${label}</strong><span>${escHtml(val)}</span></div>`
+        : '';
+      emailRows.innerHTML = row('From:', email.from) + row('Sent:', email.sent) + row('Subject:', email.subject);
+      emailSection.style.display = '';
+    } else {
+      emailSection.style.display = 'none';
+    }
+    document.getElementById('file-info').style.display = '';
+
     // Pre-fill thread name from filename
     const threadName = document.getElementById('thread-name-input');
     if (!threadName.value) {
