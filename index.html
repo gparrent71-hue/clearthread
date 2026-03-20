@@ -757,8 +757,8 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
   ]
 }`;
 
-  // Conservative limit: ~2 chars/token for dense content; target 175k tokens max
-  const CHAR_LIMIT = 350000;
+  // Stay under 50k input tokens/min rate limit; ~80k chars ≈ 40k tokens
+  const CHAR_LIMIT = 80000;
   let truncated = false;
   if (text.length > CHAR_LIMIT) {
     text = text.slice(0, CHAR_LIMIT);
