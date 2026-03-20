@@ -744,7 +744,7 @@ async function deleteItem(id) {
 // ─────────────────────────────────────────────
 // Claude API Extraction
 // ─────────────────────────────────────────────
-async function extractFromText(text) {
+async function extractFromText(text, modelOverride) {
   const apiKey = state.apiKey;
   if (!apiKey) throw new Error('No API key set. Please add your Claude API key in Settings.');
 
@@ -793,7 +793,7 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: state.model,
+      model: modelOverride || state.model,
       max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: 'user', content: text }],
@@ -803,7 +803,9 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     const msg = err?.error?.message || `API error ${resp.status}`;
-    throw new Error(msg);
+    const error = new Error(msg);
+    if (resp.status === 429) error.isRateLimit = true;
+    throw error;
   }
 
   const data = await resp.json();
@@ -1079,16 +1081,52 @@ function splitIntoChunks(text, maxChars = 380000) {
   return chunks;
 }
 
+async function waitWithCountdown(seconds, label) {
+  for (let s = seconds; s > 0; s--) {
+    document.getElementById('extracting-text').textContent = `${label} — resuming in ${s}s`;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+}
+
 async function extractAllChunks(text, onProgress) {
-  const chunks = splitIntoChunks(text);
+  const HAIKU = 'claude-haiku-4-5-20251001';
+  const CHUNK_SIZE = 80000;
+  const RATE_WINDOW_MS = 65000; // ms to wait from chunk start before sending next
+
+  const chunks = splitIntoChunks(text, CHUNK_SIZE);
   let allItems = [];
   let suggestedTitle = '';
 
   for (let i = 0; i < chunks.length; i++) {
     onProgress(i + 1, chunks.length);
-    const result = await extractFromText(chunks[i]);
+    const chunkStart = Date.now();
+
+    // Extract with auto-retry on rate limit
+    let result;
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      try {
+        result = await extractFromText(chunks[i], HAIKU);
+        break;
+      } catch (e) {
+        if (e.isRateLimit && attempt < 3) {
+          await waitWithCountdown(65, `Rate limit hit — retrying chunk ${i + 1}`);
+        } else {
+          throw e;
+        }
+      }
+    }
+
     if (!suggestedTitle && result.suggestedTitle) suggestedTitle = result.suggestedTitle;
     allItems = allItems.concat(result.items || []);
+
+    // Wait out the remainder of the rate limit window before the next chunk
+    if (i < chunks.length - 1) {
+      const elapsed = Date.now() - chunkStart;
+      const remaining = Math.ceil(Math.max(0, RATE_WINDOW_MS - elapsed) / 1000);
+      if (remaining > 0) {
+        await waitWithCountdown(remaining, `Chunk ${i + 1} of ${chunks.length} complete`);
+      }
+    }
   }
 
   return { suggestedTitle, items: allItems, _chunkCount: chunks.length };
@@ -1119,7 +1157,7 @@ async function doExtraction() {
                       : `Processing chunk ${current} of ${total}…`;
         document.getElementById('extracting-sub').textContent =
           total === 1 ? 'This usually takes 5–15 seconds'
-                      : `Chunk ${current} of ${total} — ${Math.round(current / total * 100)}% complete`;
+                      : `Using Haiku for large file — ${Math.round((current - 1) / total * 100)}% complete`;
       });
       if (result._chunkCount > 1) {
         showToast(`✓ Processed ${result._chunkCount} chunks — review items below`);
@@ -1350,10 +1388,10 @@ function readFile(file) {
 
     // Character count and chunk info
     const total = state.fileContent.length;
-    const chunks = splitIntoChunks(state.fileContent);
+    const chunks = splitIntoChunks(state.fileContent, 80000);
     const sizeEl = document.getElementById('file-info-size');
     if (chunks.length > 1) {
-      sizeEl.textContent = `${total.toLocaleString()} chars — full file will be processed in ${chunks.length} chunks`;
+      sizeEl.textContent = `${total.toLocaleString()} chars — will be processed in ${chunks.length} chunks using Haiku`;
       sizeEl.className = 'file-info-size';
     } else {
       sizeEl.textContent = `${total.toLocaleString()} chars — full file will be sent to Claude`;
