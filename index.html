@@ -1101,15 +1101,18 @@ async function extractAllChunks(text, onProgress) {
     onProgress(i + 1, chunks.length);
     const chunkStart = Date.now();
 
-    // Extract with auto-retry on rate limit
+    // Extract with auto-retry on rate limit or network errors
     let result;
     for (let attempt = 0; attempt <= 3; attempt++) {
       try {
         result = await extractFromText(chunks[i], HAIKU);
         break;
       } catch (e) {
-        if (e.isRateLimit && attempt < 3) {
-          await waitWithCountdown(65, `Rate limit hit — retrying chunk ${i + 1}`);
+        const isRetryable = e.isRateLimit || e.message === 'Failed to fetch' || e instanceof TypeError;
+        if (isRetryable && attempt < 3) {
+          const label = e.isRateLimit ? `Rate limit hit — retrying chunk ${i + 1}`
+                                      : `Network error — retrying chunk ${i + 1}`;
+          await waitWithCountdown(30, label);
         } else {
           throw e;
         }
