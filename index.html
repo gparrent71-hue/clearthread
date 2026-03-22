@@ -705,6 +705,22 @@ function splitIntoChunks(text, maxChars) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Escape bare newlines/carriage returns inside JSON string values
+// (Claude sometimes includes raw control chars from email text)
+function sanitizeJson(str) {
+  let out = '', inStr = false, esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (esc)            { out += ch; esc = false; continue; }
+    if (ch === '\\' && inStr) { out += ch; esc = true;  continue; }
+    if (ch === '"')     { inStr = !inStr; out += ch; continue; }
+    if (inStr && ch === '\n') { out += '\\n'; continue; }
+    if (inStr && ch === '\r') { out += '\\r'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
 async function waitWithCountdown(seconds, label) {
   for (let s = seconds; s > 0; s--) {
     self.postMessage({ type: 'tick', secondsLeft: s, label });
@@ -745,6 +761,7 @@ async function extractChunk(chunkText, apiKey, systemPrompt) {
   const firstBrace = jsonStr.indexOf('{');
   const lastBrace = jsonStr.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  jsonStr = sanitizeJson(jsonStr);
   let parsed;
   try { parsed = JSON.parse(jsonStr); }
   catch { throw new Error(`JSON parse failed. Response start: "${raw.slice(0, 80)}" / end: "${raw.slice(-80)}"`); }
@@ -875,6 +892,22 @@ async function deleteItem(id) {
 // ─────────────────────────────────────────────
 // Claude API Extraction
 // ─────────────────────────────────────────────
+
+// Escape bare newlines/carriage returns inside JSON string values
+function sanitizeJson(str) {
+  let out = '', inStr = false, esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (esc)            { out += ch; esc = false; continue; }
+    if (ch === '\\' && inStr) { out += ch; esc = true;  continue; }
+    if (ch === '"')     { inStr = !inStr; out += ch; continue; }
+    if (inStr && ch === '\n') { out += '\\n'; continue; }
+    if (inStr && ch === '\r') { out += '\\r'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
 const SYSTEM_PROMPT = `You are an expert at extracting actionable information from email threads and meeting notes.
 
 Analyze the provided text and extract ALL items into exactly these five categories:
@@ -947,6 +980,7 @@ async function extractFromText(text, modelOverride) {
   const firstBrace = jsonStr.indexOf('{');
   const lastBrace = jsonStr.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  jsonStr = sanitizeJson(jsonStr);
 
   let parsed;
   try { parsed = JSON.parse(jsonStr); }
