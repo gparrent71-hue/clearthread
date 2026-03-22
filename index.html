@@ -666,6 +666,129 @@
 <!-- Toast -->
 <div id="toast"></div>
 
+<!-- ═══ EXTRACTION WORKER (background thread — not executed directly) ═══ -->
+<script id="extraction-worker" type="javascript/worker">
+const CHUNK_SIZE = 80000;
+const RATE_WINDOW_MS = 65000;
+
+function splitIntoChunks(text, maxChars) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return [text.slice(0, maxChars)];
+  const emails = [];
+  if (emailStarts[0] > 0) emails.push(text.slice(0, emailStarts[0]));
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    emails.push(text.slice(start, end));
+  });
+  const chunks = [];
+  let current = '';
+  for (const email of emails) {
+    if (email.length > maxChars) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(email.slice(0, maxChars));
+    } else if (current.length + email.length > maxChars) {
+      chunks.push(current);
+      current = email;
+    } else {
+      current += email;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function waitWithCountdown(seconds, label) {
+  for (let s = seconds; s > 0; s--) {
+    self.postMessage({ type: 'tick', secondsLeft: s, label });
+    await sleep(1000);
+  }
+}
+
+async function extractChunk(chunkText, apiKey, systemPrompt) {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: chunkText }],
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const msg = err?.error?.message || `API error ${resp.status}`;
+    const error = new Error(msg);
+    if (resp.status === 429) error.isRateLimit = true;
+    throw error;
+  }
+  const data = await resp.json();
+  const raw = data.content?.[0]?.text || '';
+  const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  let parsed;
+  try { parsed = JSON.parse(cleaned); }
+  catch { throw new Error('Claude returned unexpected output. Please try again.'); }
+  return parsed;
+}
+
+self.onmessage = async function(e) {
+  const { apiKey, text, systemPrompt } = e.data;
+  const chunks = splitIntoChunks(text, CHUNK_SIZE);
+  let allItems = [];
+  let suggestedTitle = '';
+
+  for (let i = 0; i < chunks.length; i++) {
+    self.postMessage({ type: 'progress', current: i + 1, total: chunks.length });
+    const chunkStart = Date.now();
+
+    let result;
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      try {
+        result = await extractChunk(chunks[i], apiKey, systemPrompt);
+        break;
+      } catch (err) {
+        const isRetryable = err.isRateLimit || err.message === 'Failed to fetch' || err instanceof TypeError;
+        if (isRetryable && attempt < 3) {
+          const label = err.isRateLimit
+            ? `Rate limit hit — retrying chunk ${i + 1}`
+            : `Network error — retrying chunk ${i + 1}`;
+          await waitWithCountdown(30, label);
+        } else {
+          self.postMessage({ type: 'error', message: err.message || 'Extraction failed' });
+          return;
+        }
+      }
+    }
+
+    if (!suggestedTitle && result.suggestedTitle) suggestedTitle = result.suggestedTitle;
+    allItems = allItems.concat(result.items || []);
+
+    if (i < chunks.length - 1) {
+      const elapsed = Date.now() - chunkStart;
+      const remaining = Math.ceil(Math.max(0, RATE_WINDOW_MS - elapsed) / 1000);
+      if (remaining > 0) {
+        await waitWithCountdown(remaining, `Chunk ${i + 1} of ${chunks.length} complete`);
+      }
+    }
+  }
+
+  self.postMessage({ type: 'done', suggestedTitle, items: allItems, chunkCount: chunks.length });
+};
+</script>
+
 <!-- ═══ JAVASCRIPT ═══ -->
 <script>
 // ─────────────────────────────────────────────
@@ -697,6 +820,7 @@ const state = {
   importStep: 'input',   // 'input' | 'extracting' | 'preview'
   importTab: 'paste',    // 'paste' | 'file'
   fileContent: null,
+  worker: null,
 };
 
 // ─────────────────────────────────────────────
@@ -744,11 +868,7 @@ async function deleteItem(id) {
 // ─────────────────────────────────────────────
 // Claude API Extraction
 // ─────────────────────────────────────────────
-async function extractFromText(text, modelOverride) {
-  const apiKey = state.apiKey;
-  if (!apiKey) throw new Error('No API key set. Please add your Claude API key in Settings.');
-
-  const systemPrompt = `You are an expert at extracting actionable information from email threads and meeting notes.
+const SYSTEM_PROMPT = `You are an expert at extracting actionable information from email threads and meeting notes.
 
 Analyze the provided text and extract ALL items into exactly these five categories:
 - "action": specific tasks or work items someone needs to do
@@ -780,6 +900,10 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
   ]
 }`;
 
+async function extractFromText(text, modelOverride) {
+  const apiKey = state.apiKey;
+  if (!apiKey) throw new Error('No API key set. Please add your Claude API key in Settings.');
+
   // Safety limit per call — chunking handles splitting before this point
   const CHAR_LIMIT = 380000;
   if (text.length > CHAR_LIMIT) text = text.slice(0, CHAR_LIMIT);
@@ -795,7 +919,7 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
     body: JSON.stringify({
       model: modelOverride || state.model,
       max_tokens: 4096,
-      system: systemPrompt,
+      system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: text }],
     }),
   });
@@ -969,6 +1093,10 @@ function openImport() {
 }
 
 function closeImport() {
+  if (state.worker) {
+    state.worker.terminate();
+    state.worker = null;
+  }
   document.getElementById('import-overlay').classList.remove('visible');
 }
 
@@ -1007,7 +1135,9 @@ function setImportStep(step) {
     footer.style.display = '';
     title.textContent = 'Import Thread';
   } else if (step === 'extracting') {
-    footer.style.display = 'none';
+    actionBtn.textContent = 'Extracting…';
+    actionBtn.disabled = true;
+    footer.style.display = '';
     title.textContent = 'Extracting…';
   } else if (step === 'preview') {
     actionBtn.textContent = `Save ${state.previewItems.length} Item${state.previewItems.length !== 1 ? 's' : ''} to Dashboard`;
@@ -1081,58 +1211,46 @@ function splitIntoChunks(text, maxChars = 380000) {
   return chunks;
 }
 
-async function waitWithCountdown(seconds, label) {
-  for (let s = seconds; s > 0; s--) {
-    document.getElementById('extracting-text').textContent = `${label} — resuming in ${s}s`;
-    await new Promise(r => setTimeout(r, 1000));
-  }
-}
+function runFileWorker(text) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob(
+      [document.getElementById('extraction-worker').textContent],
+      { type: 'application/javascript' }
+    );
+    const worker = new Worker(URL.createObjectURL(blob));
+    state.worker = worker;
 
-async function extractAllChunks(text, onProgress) {
-  const HAIKU = 'claude-haiku-4-5-20251001';
-  const CHUNK_SIZE = 80000;
-  const RATE_WINDOW_MS = 65000; // ms to wait from chunk start before sending next
-
-  const chunks = splitIntoChunks(text, CHUNK_SIZE);
-  let allItems = [];
-  let suggestedTitle = '';
-
-  for (let i = 0; i < chunks.length; i++) {
-    onProgress(i + 1, chunks.length);
-    const chunkStart = Date.now();
-
-    // Extract with auto-retry on rate limit or network errors
-    let result;
-    for (let attempt = 0; attempt <= 3; attempt++) {
-      try {
-        result = await extractFromText(chunks[i], HAIKU);
-        break;
-      } catch (e) {
-        const isRetryable = e.isRateLimit || e.message === 'Failed to fetch' || e instanceof TypeError;
-        if (isRetryable && attempt < 3) {
-          const label = e.isRateLimit ? `Rate limit hit — retrying chunk ${i + 1}`
-                                      : `Network error — retrying chunk ${i + 1}`;
-          await waitWithCountdown(30, label);
-        } else {
-          throw e;
-        }
+    worker.onmessage = function(e) {
+      const msg = e.data;
+      if (msg.type === 'progress') {
+        document.getElementById('extracting-text').textContent =
+          msg.total === 1 ? 'Extracting actions, deadlines, and more…'
+                          : `Processing chunk ${msg.current} of ${msg.total}…`;
+        document.getElementById('extracting-sub').textContent =
+          msg.total === 1 ? 'This usually takes 5–15 seconds'
+                          : `Using Haiku — ${Math.round((msg.current - 1) / msg.total * 100)}% complete`;
+      } else if (msg.type === 'tick') {
+        document.getElementById('extracting-text').textContent =
+          `${msg.label} — resuming in ${msg.secondsLeft}s`;
+      } else if (msg.type === 'done') {
+        state.worker = null;
+        worker.terminate();
+        resolve({ suggestedTitle: msg.suggestedTitle, items: msg.items, _chunkCount: msg.chunkCount });
+      } else if (msg.type === 'error') {
+        state.worker = null;
+        worker.terminate();
+        reject(new Error(msg.message));
       }
-    }
+    };
 
-    if (!suggestedTitle && result.suggestedTitle) suggestedTitle = result.suggestedTitle;
-    allItems = allItems.concat(result.items || []);
+    worker.onerror = function(e) {
+      state.worker = null;
+      worker.terminate();
+      reject(new Error(e.message || 'Worker error'));
+    };
 
-    // Wait out the remainder of the rate limit window before the next chunk
-    if (i < chunks.length - 1) {
-      const elapsed = Date.now() - chunkStart;
-      const remaining = Math.ceil(Math.max(0, RATE_WINDOW_MS - elapsed) / 1000);
-      if (remaining > 0) {
-        await waitWithCountdown(remaining, `Chunk ${i + 1} of ${chunks.length} complete`);
-      }
-    }
-  }
-
-  return { suggestedTitle, items: allItems, _chunkCount: chunks.length };
+    worker.postMessage({ apiKey: state.apiKey, text, systemPrompt: SYSTEM_PROMPT });
+  });
 }
 
 async function doExtraction() {
@@ -1154,14 +1272,7 @@ async function doExtraction() {
   try {
     let result;
     if (state.importTab === 'file') {
-      result = await extractAllChunks(text, (current, total) => {
-        document.getElementById('extracting-text').textContent =
-          total === 1 ? 'Extracting actions, deadlines, and more…'
-                      : `Processing chunk ${current} of ${total}…`;
-        document.getElementById('extracting-sub').textContent =
-          total === 1 ? 'This usually takes 5–15 seconds'
-                      : `Using Haiku for large file — ${Math.round((current - 1) / total * 100)}% complete`;
-      });
+      result = await runFileWorker(text);
       if (result._chunkCount > 1) {
         showToast(`✓ Processed ${result._chunkCount} chunks — review items below`);
       }
