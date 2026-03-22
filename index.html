@@ -723,7 +723,7 @@ async function extractChunk(chunkText, apiKey, systemPrompt) {
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: systemPrompt,
       messages: [{ role: 'user', content: chunkText }],
     }),
@@ -737,10 +737,14 @@ async function extractChunk(chunkText, apiKey, systemPrompt) {
   }
   const data = await resp.json();
   const raw = data.content?.[0]?.text || '';
-  const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  // Strip markdown fences, then find the outermost { } in case Claude added surrounding text
+  let jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const firstBrace = jsonStr.indexOf('{');
+  const lastBrace = jsonStr.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
   let parsed;
-  try { parsed = JSON.parse(cleaned); }
-  catch { throw new Error('Claude returned unexpected output. Please try again.'); }
+  try { parsed = JSON.parse(jsonStr); }
+  catch { throw new Error(`Claude returned unexpected output: "${raw.slice(0, 120)}…"`); }
   return parsed;
 }
 
@@ -935,12 +939,15 @@ async function extractFromText(text, modelOverride) {
   const data = await resp.json();
   const raw = data.content?.[0]?.text || '';
 
-  // Strip markdown fences if present
-  const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/,'').trim();
+  // Strip markdown fences, then find the outermost { } in case Claude added surrounding text
+  let jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const firstBrace = jsonStr.indexOf('{');
+  const lastBrace = jsonStr.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
 
   let parsed;
-  try { parsed = JSON.parse(cleaned); }
-  catch { throw new Error('Claude returned unexpected output. Please try again.'); }
+  try { parsed = JSON.parse(jsonStr); }
+  catch { throw new Error(`Claude returned unexpected output: "${raw.slice(0, 120)}…"`); }
 
   return parsed;
 }
