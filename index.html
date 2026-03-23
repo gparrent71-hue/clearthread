@@ -420,6 +420,29 @@
       font-size: 12px; color: var(--text-muted); font-style: italic;
       margin-top: 4px;
     }
+
+    /* ── Select mode ── */
+    .item-select-cb {
+      flex-shrink: 0; width: 17px; height: 17px; margin-top: 2px;
+      cursor: pointer; accent-color: var(--action);
+    }
+    .item-card.selected {
+      border-color: var(--action); background: var(--action-bg);
+      box-shadow: 0 0 0 2px rgba(37,99,235,0.15);
+    }
+    .item-card.selected .item-description { color: var(--action); }
+
+    /* ── Bulk action bar ── */
+    .bulk-bar { display: none; align-items: center; gap: 8px; }
+    .bulk-bar.visible { display: flex; }
+
+    /* ── Dupe notice in preview ── */
+    .dupe-notice {
+      display: flex; align-items: center; gap: 8px;
+      background: #fff7ed; border: 1px solid #fed7aa; color: #92400e;
+      padding: 8px 12px; border-radius: var(--radius);
+      font-size: 12px; margin-bottom: 10px;
+    }
   </style>
 </head>
 <body>
@@ -483,6 +506,15 @@
       <div>
         <div class="content-title" id="view-title">All Open Items</div>
         <div class="content-subtitle" id="view-subtitle">Loading…</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="bulk-bar" id="bulk-bar">
+          <button class="btn btn-secondary" id="btn-select-all" onclick="selectAll()">Select All</button>
+          <button class="btn btn-danger" id="btn-delete-selected" onclick="deleteSelected()" disabled>Delete Selected</button>
+          <button class="btn btn-secondary" onclick="exitSelectMode()">Cancel</button>
+        </div>
+        <button class="btn btn-secondary" id="btn-delete-done" onclick="deleteAllDone()" style="display:none">Delete Done</button>
+        <button class="btn btn-secondary" id="btn-select" onclick="enterSelectMode()">Select</button>
       </div>
     </div>
     <div id="items-container"></div>
@@ -840,11 +872,14 @@ const state = {
   apiKey: localStorage.getItem('clearthread_api_key') || '',
   model: localStorage.getItem('clearthread_model') || 'claude-opus-4-6',
   previewItems: [],
+  previewDupeCount: 0,
   extractedThreadName: '',
   importStep: 'input',   // 'input' | 'extracting' | 'preview'
   importTab: 'paste',    // 'paste' | 'file'
   fileContent: null,
   worker: null,
+  selectMode: false,
+  selectedIds: new Set(),
 };
 
 // ─────────────────────────────────────────────
@@ -1009,6 +1044,7 @@ function renderAll() {
   renderCounts();
   renderItems();
   renderViewTitle();
+  updateDeleteDoneBtn();
 }
 
 function renderCounts() {
@@ -1061,12 +1097,16 @@ function renderItemCard(item) {
   const notesHtml = item.notes
     ? `<div class="item-notes">💬 ${escHtml(item.notes)}</div>` : '';
   const completeBtn = isDone
-    ? `<button class="action-btn reopen" onclick="markStatus('${item.id}','open')">Reopen</button>`
-    : `<button class="action-btn complete" onclick="markStatus('${item.id}','done')">✓ Done</button>`;
+    ? `<button class="action-btn reopen" onclick="event.stopPropagation();markStatus('${item.id}','open')">Reopen</button>`
+    : `<button class="action-btn complete" onclick="event.stopPropagation();markStatus('${item.id}','done')">✓ Done</button>`;
+  const isSelected = state.selectMode && state.selectedIds.has(item.id);
+  const selectedClass = isSelected ? ' selected' : '';
+  const cbHtml = `<input type="checkbox" class="item-select-cb" style="${state.selectMode ? '' : 'display:none'}" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation();toggleSelectItem('${item.id}')">`;
 
   return `
-    <div class="item-card status-${item.status}" id="card-${item.id}">
+    <div class="item-card status-${item.status}${selectedClass}" id="card-${item.id}" onclick="handleCardClick('${item.id}',event)" style="${state.selectMode ? 'cursor:pointer' : ''}">
       <div class="item-card-header">
+        ${cbHtml}
         <span class="cat-badge ${item.category}">${CAT_LABELS[item.category]}</span>
         ${dueHtml}
         <div class="item-meta-right">
@@ -1079,19 +1119,25 @@ function renderItemCard(item) {
         <div class="item-info">
           ${ownerHtml}${threadHtml}
           ${item.sourceSnippet
-            ? `<button class="source-toggle" onclick="toggleSource(this)">view source</button>`
+            ? `<button class="source-toggle" onclick="event.stopPropagation();toggleSource(this)">view source</button>`
             : ''}
         </div>
         <div class="item-actions">
           ${completeBtn}
-          <button class="action-btn edit" onclick="openEdit('${item.id}')">Edit</button>
-          <button class="action-btn del" onclick="confirmDelete('${item.id}')">Delete</button>
+          <button class="action-btn edit" onclick="event.stopPropagation();openEdit('${item.id}')">Edit</button>
+          <button class="action-btn del" onclick="event.stopPropagation();confirmDelete('${item.id}')">Delete</button>
         </div>
       </div>
       ${item.sourceSnippet
         ? `<div class="source-snippet">"${escHtml(item.sourceSnippet)}"</div>`
         : ''}
     </div>`;
+}
+
+function handleCardClick(id, event) {
+  if (!state.selectMode) return;
+  if (event.target.closest('.item-actions') || event.target.closest('.source-toggle') || event.target.closest('.source-snippet')) return;
+  toggleSelectItem(id);
 }
 
 function escHtml(str) {
@@ -1128,6 +1174,152 @@ function toggleSource(btn) {
 }
 
 // ─────────────────────────────────────────────
+// Deduplication
+// ─────────────────────────────────────────────
+const STOP_WORDS = new Set([
+  'the','a','an','is','are','was','were','be','been','being','to','of','and','or',
+  'in','on','at','for','with','by','from','as','that','this','it','its','will',
+  'has','have','had','need','needs','please','per','about','into','their','they',
+  'we','i','you','he','she','all','any','not','but','so','if','do','does','did',
+  'can','could','should','would','us','them'
+]);
+const DUPE_THRESHOLD = 0.72;
+
+function normalizeWords(str) {
+  return (str || '').toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 1 && !STOP_WORDS.has(w));
+}
+
+function wordSimilarity(a, b) {
+  const wa = new Set(normalizeWords(a));
+  const wb = new Set(normalizeWords(b));
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / Math.min(wa.size, wb.size);
+}
+
+function findDuplicates(newItems) {
+  const dupeIds = new Set();
+  const existingDescs = state.items.map(i => i.description);
+  newItems.forEach((item, idx) => {
+    const dupeOfExisting = existingDescs.some(d => wordSimilarity(item.description, d) >= DUPE_THRESHOLD);
+    const dupeInBatch = newItems.slice(0, idx).some(earlier => wordSimilarity(item.description, earlier.description) >= DUPE_THRESHOLD);
+    if (dupeOfExisting || dupeInBatch) dupeIds.add(item._id);
+  });
+  return dupeIds;
+}
+
+// ─────────────────────────────────────────────
+// Select Mode & Bulk Delete
+// ─────────────────────────────────────────────
+function enterSelectMode() {
+  state.selectMode = true;
+  state.selectedIds = new Set();
+  document.getElementById('bulk-bar').classList.add('visible');
+  document.getElementById('btn-select').style.display = 'none';
+  document.getElementById('btn-delete-done').style.display = 'none';
+  updateBulkBar();
+  renderItems();
+}
+
+function exitSelectMode() {
+  state.selectMode = false;
+  state.selectedIds = new Set();
+  document.getElementById('bulk-bar').classList.remove('visible');
+  document.getElementById('btn-select').style.display = '';
+  updateDeleteDoneBtn();
+  renderItems();
+}
+
+function toggleSelectItem(id) {
+  if (state.selectedIds.has(id)) state.selectedIds.delete(id);
+  else state.selectedIds.add(id);
+  const card = document.getElementById('card-' + id);
+  if (card) {
+    card.classList.toggle('selected', state.selectedIds.has(id));
+    const cb = card.querySelector('.item-select-cb');
+    if (cb) cb.checked = state.selectedIds.has(id);
+  }
+  updateBulkBar();
+}
+
+function selectAll() {
+  const items = getFilteredItems();
+  const allSelected = items.length > 0 && items.every(i => state.selectedIds.has(i.id));
+  if (allSelected) {
+    items.forEach(i => state.selectedIds.delete(i.id));
+  } else {
+    items.forEach(i => state.selectedIds.add(i.id));
+  }
+  items.forEach(i => {
+    const card = document.getElementById('card-' + i.id);
+    if (card) {
+      const sel = state.selectedIds.has(i.id);
+      card.classList.toggle('selected', sel);
+      const cb = card.querySelector('.item-select-cb');
+      if (cb) cb.checked = sel;
+    }
+  });
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const count = state.selectedIds.size;
+  const delBtn = document.getElementById('btn-delete-selected');
+  delBtn.disabled = count === 0;
+  delBtn.textContent = count > 0 ? `Delete Selected (${count})` : 'Delete Selected';
+  const items = getFilteredItems();
+  const allSelected = items.length > 0 && items.every(i => state.selectedIds.has(i.id));
+  document.getElementById('btn-select-all').textContent = allSelected ? 'Deselect All' : 'Select All';
+}
+
+function updateDeleteDoneBtn() {
+  if (state.selectMode) return;
+  const doneCount = state.items.filter(i => i.status === 'done').length;
+  document.getElementById('btn-delete-done').style.display = doneCount > 0 ? '' : 'none';
+}
+
+async function deleteSelected() {
+  const ids = [...state.selectedIds];
+  if (ids.length === 0) return;
+  if (!confirm(`Delete ${ids.length} selected item${ids.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  const btn = document.getElementById('btn-delete-selected');
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  try {
+    const batch = db.batch();
+    ids.forEach(id => batch.delete(db.collection('clearthread_items').doc(id)));
+    await batch.commit();
+    exitSelectMode();
+    showToast(`✓ Deleted ${ids.length} item${ids.length !== 1 ? 's' : ''}`, 'success');
+  } catch(e) {
+    showToast('Error deleting items', 'error');
+    updateBulkBar();
+  }
+}
+
+async function deleteAllDone() {
+  const doneItems = state.items.filter(i => i.status === 'done');
+  if (doneItems.length === 0) return;
+  if (!confirm(`Delete all ${doneItems.length} completed item${doneItems.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  const btn = document.getElementById('btn-delete-done');
+  btn.disabled = true;
+  try {
+    const batch = db.batch();
+    doneItems.forEach(item => batch.delete(db.collection('clearthread_items').doc(item.id)));
+    await batch.commit();
+    showToast(`✓ Deleted ${doneItems.length} completed item${doneItems.length !== 1 ? 's' : ''}`, 'success');
+  } catch(e) {
+    showToast('Error deleting items', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─────────────────────────────────────────────
 // Import Modal
 // ─────────────────────────────────────────────
 function openImport() {
@@ -1160,6 +1352,7 @@ function resetImport() {
   document.getElementById('file-info').style.display = 'none';
   state.fileContent = null;
   state.previewItems = [];
+  state.previewDupeCount = 0;
   setImportTab('paste');
 }
 
@@ -1324,7 +1517,10 @@ async function doExtraction() {
       result = await extractFromText(text);
     }
 
-    state.previewItems = (result.items || []).map((item, i) => ({ ...item, _id: i }));
+    const rawItems = (result.items || []).map((item, i) => ({ ...item, _id: i }));
+    const dupeIds = findDuplicates(rawItems);
+    state.previewDupeCount = dupeIds.size;
+    state.previewItems = rawItems.filter(item => !dupeIds.has(item._id));
     state.extractedThreadName = result.suggestedTitle || 'Untitled Thread';
 
     const userTitle = document.getElementById('thread-name-input').value.trim();
@@ -1340,14 +1536,20 @@ async function doExtraction() {
 
 function renderPreview() {
   const list = document.getElementById('preview-list');
-  document.getElementById('preview-count').textContent = `${state.previewItems.length} item${state.previewItems.length !== 1 ? 's' : ''} found`;
+  let countLabel = `${state.previewItems.length} item${state.previewItems.length !== 1 ? 's' : ''} found`;
+  if (state.previewDupeCount > 0) countLabel += ` · ${state.previewDupeCount} duplicate${state.previewDupeCount !== 1 ? 's' : ''} removed`;
+  document.getElementById('preview-count').textContent = countLabel;
+
+  const dupeNotice = state.previewDupeCount > 0
+    ? `<div class="dupe-notice">⚠ ${state.previewDupeCount} item${state.previewDupeCount !== 1 ? 's were' : ' was'} skipped as possible duplicate${state.previewDupeCount !== 1 ? 's' : ''} of items already in your dashboard</div>`
+    : '';
 
   if (state.previewItems.length === 0) {
-    list.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px">No items were extracted. Try importing a different thread.</div>';
+    list.innerHTML = dupeNotice + '<div style="text-align:center;color:var(--text-muted);padding:20px">No items were extracted. Try importing a different thread.</div>';
     return;
   }
 
-  list.innerHTML = state.previewItems.map(item => `
+  list.innerHTML = dupeNotice + state.previewItems.map(item => `
     <div class="preview-item" id="preview-${item._id}">
       <div class="preview-item-body">
         <span class="cat-badge ${item.category}" style="font-size:10px">${CAT_LABELS[item.category]}</span>
