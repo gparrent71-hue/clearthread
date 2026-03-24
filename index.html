@@ -715,6 +715,19 @@
 const CHUNK_SIZE = 50000;
 const RATE_WINDOW_MS = 65000;
 
+function stripSignature(text) {
+  // Standard RFC separator: -- on its own line
+  let idx = text.search(/^--\s*$/m);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  // Horizontal rule: 4+ underscores or dashes on their own line
+  idx = text.search(/^[_\-]{4,}\s*$/m);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  // Closing salutation on its own line (tight match — must be the whole line)
+  idx = text.search(/^(thanks|thank you|regards|best regards|kind regards|warm regards|best|sincerely|cheers|cordially)[,.]?\s*$/im);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  return text;
+}
+
 function preprocessEmails(text) {
   const emailStarts = [];
   const re = /^From:\s+.+/gim;
@@ -735,7 +748,7 @@ function preprocessEmails(text) {
     const key = fromMatch && sentMatch ? (fromMatch[1].trim() + '|' + sentMatch[1].trim()) : null;
     const catMatch = block.match(/^Categories:\s*(.+)$/im);
     const flagged = /^Flag Status:\s*Flagged/im.test(block);
-    blocks.push({ key, text: block, outlookCategory: catMatch ? catMatch[1].trim() : null, flagged });
+    blocks.push({ key, text: stripSignature(block), outlookCategory: catMatch ? catMatch[1].trim() : null, flagged });
   });
 
   const seen = new Set();
