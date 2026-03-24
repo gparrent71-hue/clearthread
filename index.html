@@ -443,6 +443,14 @@
       padding: 8px 12px; border-radius: var(--radius);
       font-size: 12px; margin-bottom: 10px;
     }
+
+    /* ── Outlook metadata badges ── */
+    .outlook-cat-badge {
+      font-size: 10px; padding: 2px 6px; border-radius: 3px;
+      background: #f1f5f9; color: #475569; font-weight: 500;
+      border: 1px solid #e2e8f0; flex-shrink: 0;
+    }
+    .flag-badge { font-size: 12px; flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -498,6 +506,10 @@
       <button class="nav-item" data-filter-status="snoozed">Snoozed</button>
       <button class="nav-item" data-filter-status="all">All</button>
     </nav>
+
+    <div class="sidebar-divider" id="outlook-cat-divider" style="display:none"></div>
+    <span class="sidebar-label" id="outlook-cat-label" style="display:none">Outlook Category</span>
+    <nav id="outlook-cat-nav"></nav>
   </aside>
 
   <!-- Main Content -->
@@ -703,6 +715,49 @@
 const CHUNK_SIZE = 50000;
 const RATE_WINDOW_MS = 65000;
 
+function preprocessEmails(text) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return { text, emailsRemoved: 0 };
+
+  const blocks = [];
+  if (emailStarts[0] > 0) blocks.push({ key: null, text: text.slice(0, emailStarts[0]) });
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    const block = text.slice(start, end);
+    const fromMatch = block.match(/^From:\s*(.+)$/im);
+    const sentMatch = block.match(/^Sent:\s*(.+)$/im);
+    const key = fromMatch && sentMatch ? (fromMatch[1].trim() + '|' + sentMatch[1].trim()) : null;
+    const catMatch = block.match(/^Categories:\s*(.+)$/im);
+    const flagged = /^Flag Status:\s*Flagged/im.test(block);
+    blocks.push({ key, text: block, outlookCategory: catMatch ? catMatch[1].trim() : null, flagged });
+  });
+
+  const seen = new Set();
+  let emailsRemoved = 0;
+  const deduped = blocks.filter(b => {
+    if (!b.key) return true;
+    if (seen.has(b.key)) { emailsRemoved++; return false; }
+    seen.add(b.key);
+    return true;
+  });
+
+  const annotated = deduped.map(b => {
+    if (!b.key) return b.text;
+    const parts = [];
+    if (b.outlookCategory) parts.push(`OUTLOOK_CATEGORY: ${b.outlookCategory}`);
+    if (b.flagged) parts.push('OUTLOOK_FLAGGED');
+    return parts.length ? `[${parts.join(', ')}]\n` + b.text : b.text;
+  }).join('');
+
+  return { text: annotated, emailsRemoved };
+}
+
 function splitIntoChunks(text, maxChars) {
   const emailStarts = [];
   const re = /^From:\s+.+/gim;
@@ -802,7 +857,8 @@ async function extractChunk(chunkText, apiKey, systemPrompt) {
 
 self.onmessage = async function(e) {
   const { apiKey, text, systemPrompt } = e.data;
-  const chunks = splitIntoChunks(text, CHUNK_SIZE);
+  const { text: processedText, emailsRemoved } = preprocessEmails(text);
+  const chunks = splitIntoChunks(processedText, CHUNK_SIZE);
   let allItems = [];
   let suggestedTitle = '';
 
@@ -841,7 +897,7 @@ self.onmessage = async function(e) {
     }
   }
 
-  self.postMessage({ type: 'done', suggestedTitle, items: allItems, chunkCount: chunks.length });
+  self.postMessage({ type: 'done', suggestedTitle, items: allItems, chunkCount: chunks.length, emailsRemoved });
 };
 </script>
 
@@ -869,6 +925,7 @@ const state = {
   items: [],
   filterCat: 'all',
   filterStatus: 'open',
+  filterOutlookCat: 'all',
   apiKey: localStorage.getItem('clearthread_api_key') || '',
   model: localStorage.getItem('clearthread_model') || 'claude-opus-4-6',
   previewItems: [],
@@ -958,6 +1015,8 @@ For each item extract:
 - owner: the person responsible or who needs to act (first name or full name if mentioned, null if unclear)
 - dueDate: due date if mentioned (natural language: "Friday", "EOD March 31", etc., null if none)
 - sourceSnippet: the exact quote or near-quote from the source text that led to this item (max 150 chars)
+- outlookCategory: if the email block containing this item is preceded by [OUTLOOK_CATEGORY: xxx], use that value; otherwise null
+- flagged: true if the email block containing this item is preceded by [OUTLOOK_FLAGGED], otherwise false
 
 Be thorough — capture everything actionable, time-sensitive, or ambiguous. Do not miss items.
 
@@ -970,7 +1029,9 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
       "description": "...",
       "owner": "...",
       "dueDate": null,
-      "sourceSnippet": "..."
+      "sourceSnippet": "...",
+      "outlookCategory": null,
+      "flagged": false
     }
   ]
 }`;
@@ -1036,7 +1097,8 @@ function getFilteredItems() {
   return state.items.filter(item => {
     const catMatch = state.filterCat === 'all' || item.category === state.filterCat;
     const statusMatch = state.filterStatus === 'all' || item.status === state.filterStatus;
-    return catMatch && statusMatch;
+    const outlookMatch = state.filterOutlookCat === 'all' || item.outlookCategory === state.filterOutlookCat;
+    return catMatch && statusMatch && outlookMatch;
   });
 }
 
@@ -1045,6 +1107,37 @@ function renderAll() {
   renderItems();
   renderViewTitle();
   updateDeleteDoneBtn();
+  renderOutlookFilters();
+}
+
+function renderOutlookFilters() {
+  const cats = [...new Set(state.items.map(i => i.outlookCategory).filter(Boolean))].sort();
+  const divider = document.getElementById('outlook-cat-divider');
+  const label   = document.getElementById('outlook-cat-label');
+  const nav     = document.getElementById('outlook-cat-nav');
+  if (cats.length === 0) {
+    divider.style.display = 'none';
+    label.style.display   = 'none';
+    nav.innerHTML = '';
+    return;
+  }
+  divider.style.display = '';
+  label.style.display   = '';
+  nav.innerHTML = [
+    `<button class="nav-item ${state.filterOutlookCat === 'all' ? 'active' : ''}" data-filter-outlook="all"><span class="left">All</span></button>`,
+    ...cats.map(cat =>
+      `<button class="nav-item ${state.filterOutlookCat === cat ? 'active' : ''}" data-filter-outlook="${escHtml(cat)}"><span class="left">🏷 ${escHtml(cat)}</span></button>`
+    )
+  ].join('');
+  nav.querySelectorAll('[data-filter-outlook]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      nav.querySelectorAll('[data-filter-outlook]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.filterOutlookCat = btn.dataset.filterOutlook;
+      renderItems();
+      renderViewTitle();
+    });
+  });
 }
 
 function renderCounts() {
@@ -1092,6 +1185,10 @@ function renderItemCard(item) {
     : '';
   const ownerHtml = item.owner
     ? `<span>👤 ${escHtml(item.owner)}</span>` : '';
+  const outlookCatHtml = item.outlookCategory
+    ? `<span class="outlook-cat-badge">🏷 ${escHtml(item.outlookCategory)}</span>` : '';
+  const flagHtml = item.flagged
+    ? `<span class="flag-badge" title="Flagged for follow-up">🚩</span>` : '';
   const threadHtml = item.threadTitle
     ? `<span>📎 ${escHtml(item.threadTitle)}</span>` : '';
   const notesHtml = item.notes
@@ -1108,6 +1205,7 @@ function renderItemCard(item) {
       <div class="item-card-header">
         ${cbHtml}
         <span class="cat-badge ${item.category}">${CAT_LABELS[item.category]}</span>
+        ${flagHtml}${outlookCatHtml}
         ${dueHtml}
         <div class="item-meta-right">
           <span class="status-badge ${item.status}">${item.status}</span>
@@ -1448,6 +1546,49 @@ function splitIntoChunks(text, maxChars = 380000) {
   return chunks;
 }
 
+function preprocessEmails(text) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return { text, emailsRemoved: 0 };
+
+  const blocks = [];
+  if (emailStarts[0] > 0) blocks.push({ key: null, text: text.slice(0, emailStarts[0]) });
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    const block = text.slice(start, end);
+    const fromMatch = block.match(/^From:\s*(.+)$/im);
+    const sentMatch = block.match(/^Sent:\s*(.+)$/im);
+    const key = fromMatch && sentMatch ? (fromMatch[1].trim() + '|' + sentMatch[1].trim()) : null;
+    const catMatch = block.match(/^Categories:\s*(.+)$/im);
+    const flagged = /^Flag Status:\s*Flagged/im.test(block);
+    blocks.push({ key, text: block, outlookCategory: catMatch ? catMatch[1].trim() : null, flagged });
+  });
+
+  const seen = new Set();
+  let emailsRemoved = 0;
+  const deduped = blocks.filter(b => {
+    if (!b.key) return true;
+    if (seen.has(b.key)) { emailsRemoved++; return false; }
+    seen.add(b.key);
+    return true;
+  });
+
+  const annotated = deduped.map(b => {
+    if (!b.key) return b.text;
+    const parts = [];
+    if (b.outlookCategory) parts.push(`OUTLOOK_CATEGORY: ${b.outlookCategory}`);
+    if (b.flagged) parts.push('OUTLOOK_FLAGGED');
+    return parts.length ? `[${parts.join(', ')}]\n` + b.text : b.text;
+  }).join('');
+
+  return { text: annotated, emailsRemoved };
+}
+
 function runFileWorker(text) {
   return new Promise((resolve, reject) => {
     const blob = new Blob(
@@ -1472,7 +1613,7 @@ function runFileWorker(text) {
       } else if (msg.type === 'done') {
         state.worker = null;
         worker.terminate();
-        resolve({ suggestedTitle: msg.suggestedTitle, items: msg.items, _chunkCount: msg.chunkCount });
+        resolve({ suggestedTitle: msg.suggestedTitle, items: msg.items, _chunkCount: msg.chunkCount, _emailsRemoved: msg.emailsRemoved });
       } else if (msg.type === 'error') {
         state.worker = null;
         worker.terminate();
@@ -1510,11 +1651,13 @@ async function doExtraction() {
     let result;
     if (state.importTab === 'file') {
       result = await runFileWorker(text);
-      if (result._chunkCount > 1) {
-        showToast(`✓ Processed ${result._chunkCount} chunks — review items below`);
-      }
+      const parts = [];
+      if (result._chunkCount > 1) parts.push(`${result._chunkCount} chunks processed`);
+      if (result._emailsRemoved > 0) parts.push(`${result._emailsRemoved} duplicate email${result._emailsRemoved !== 1 ? 's' : ''} removed`);
+      if (parts.length) showToast(`✓ ${parts.join(' · ')}`);
     } else {
-      result = await extractFromText(text);
+      const { text: processedText } = preprocessEmails(text);
+      result = await extractFromText(processedText);
     }
 
     const rawItems = (result.items || []).map((item, i) => ({ ...item, _id: i }));
@@ -1748,15 +1891,16 @@ function readFile(file) {
 
     // Character count and chunk info
     const total = state.fileContent.length;
-    const chunks = splitIntoChunks(state.fileContent, 50000);
+    const { text: processedText, emailsRemoved } = preprocessEmails(state.fileContent);
+    const chunks = splitIntoChunks(processedText, 50000);
     const sizeEl = document.getElementById('file-info-size');
-    if (chunks.length > 1) {
-      sizeEl.textContent = `${total.toLocaleString()} chars — will be processed in ${chunks.length} chunks using Haiku`;
-      sizeEl.className = 'file-info-size';
-    } else {
-      sizeEl.textContent = `${total.toLocaleString()} chars — full file will be sent to Claude`;
-      sizeEl.className = 'file-info-size';
-    }
+    let sizeText = `${total.toLocaleString()} chars`;
+    if (emailsRemoved > 0) sizeText += ` · ${emailsRemoved} duplicate email${emailsRemoved !== 1 ? 's' : ''} removed`;
+    sizeText += chunks.length > 1
+      ? ` — will be processed in ${chunks.length} chunks using Haiku`
+      : ` — full file will be sent to Claude`;
+    sizeEl.textContent = sizeText;
+    sizeEl.className = 'file-info-size';
 
     // Last email details
     const email = parseLastEmail(state.fileContent);
