@@ -505,28 +505,34 @@ function listenItems() {
 }
 
 async function saveItemsBatch(items, threadId, threadTitle) {
-  const batch = db.batch();
-  const threadRef = db.collection('radar_threads').doc(threadId);
-  batch.set(threadRef, {
-    title: threadTitle,
-    importedAt: firebase.firestore.FieldValue.serverTimestamp()
-  });
-  items.forEach(item => {
-    const ref = db.collection('radar_items').doc();
-    batch.set(ref, {
-      ...item,
-      threadId,
-      threadTitle,
-      status: 'open',
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+  try {
+    const batch = db.batch();
+    const threadRef = db.collection('radar_threads').doc(threadId);
+    batch.set(threadRef, {
+      title: threadTitle,
+      importedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
-  });
-  await batch.commit();
-  // Re-fetch immediately so dashboard updates without waiting for onSnapshot
-  const snap = await db.collection('radar_items').orderBy('createdAt', 'desc').get();
-  state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-  renderAll();
+    items.forEach(item => {
+      const ref = db.collection('radar_items').doc();
+      batch.set(ref, {
+        ...item,
+        threadId,
+        threadTitle,
+        status: 'open',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+    await batch.commit();
+    // Re-fetch immediately so dashboard updates without waiting for onSnapshot
+    const snap = await db.collection('radar_items').orderBy('createdAt', 'desc').get();
+    state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderAll();
+  } catch (err) {
+    console.error('saveItemsBatch failed:', err);
+    showToast('Save failed — please try again', 'error');
+    throw err;
+  }
 }
 
 async function updateItem(id, data) {
