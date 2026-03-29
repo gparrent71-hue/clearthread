@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Commitment Radar</title>
+
+  <!-- Firebase (same CDN as ClearThread index.html lines 8-10) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f0f4f8;
+      --surface: #ffffff;
+      --surface-hover: #f8fafc;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --text-light: #94a3b8;
+      --header-h: 56px;
+      --radius: 8px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+
+      /* Zone colors */
+      --hot: #ef4444;
+      --hot-bg: #fef2f2;
+      --hot-border: #fca5a5;
+      --approaching: #f59e0b;
+      --approaching-bg: #fffbeb;
+      --approaching-border: #fcd34d;
+      --parked: #3b82f6;
+      --parked-bg: #eff6ff;
+      --parked-border: #93c5fd;
+      --invest: #8b5cf6;
+      --invest-bg: #f5f3ff;
+      --invest-border: #c4b5fd;
+
+      /* Category colors */
+      --cat-mine: #2563eb;
+      --cat-mine-bg: #eff6ff;
+      --cat-theirs: #d97706;
+      --cat-theirs-bg: #fef3c7;
+      --cat-waiting: #7c3aed;
+      --cat-waiting-bg: #f5f3ff;
+      --cat-risk: #ef4444;
+      --cat-risk-bg: #fef2f2;
+      --cat-decision: #059669;
+      --cat-decision-bg: #ecfdf5;
+      --cat-followup: #ea580c;
+      --cat-followup-bg: #fff7ed;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      height: var(--header-h);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      flex-shrink: 0;
+    }
+    .logo { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+    .logo span { color: var(--hot); }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+
+    /* ── Buttons (transplant from ClearThread, same classes) ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: var(--radius);
+      font-size: 13px; font-weight: 500; cursor: pointer;
+      border: none; transition: all 0.15s;
+    }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--surface-hover); }
+    .btn-ghost { background: transparent; color: var(--text-muted); border: none; padding: 6px 10px; }
+    .btn-ghost:hover { background: var(--bg); color: var(--text); }
+    .btn-danger { background: #ef4444; color: white; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+    /* ── Filter bar ── */
+    .filter-bar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 20px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .filter-label { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-right: 2px; text-transform: uppercase; letter-spacing: .5px; }
+    .filter-chip {
+      padding: 4px 11px; border-radius: 20px; font-size: 11px; font-weight: 600;
+      cursor: pointer; border: 1.5px solid transparent; transition: all 0.15s;
+      background: #f1f5f9; color: #475569; border-color: #cbd5e1;
+    }
+    .filter-chip:hover { opacity: 0.8; }
+    .filter-chip.active { background: #1e293b; color: white; border-color: #1e293b; }
+    .filter-chip.chip-mine { background: var(--cat-mine-bg); color: var(--cat-mine); border-color: #93c5fd; }
+    .filter-chip.chip-mine.active { background: var(--cat-mine); color: white; }
+    .filter-chip.chip-theirs { background: var(--cat-theirs-bg); color: var(--cat-theirs); border-color: #fcd34d; }
+    .filter-chip.chip-theirs.active { background: var(--cat-theirs); color: white; }
+    .filter-chip.chip-waiting { background: var(--cat-waiting-bg); color: var(--cat-waiting); border-color: #c4b5fd; }
+    .filter-chip.chip-waiting.active { background: var(--cat-waiting); color: white; }
+    .filter-chip.chip-risk { background: var(--cat-risk-bg); color: var(--cat-risk); border-color: var(--hot-border); }
+    .filter-chip.chip-risk.active { background: var(--cat-risk); color: white; }
+    .filter-chip.chip-decision { background: var(--cat-decision-bg); color: var(--cat-decision); border-color: #6ee7b7; }
+    .filter-chip.chip-decision.active { background: var(--cat-decision); color: white; }
+    .filter-chip.chip-followup { background: var(--cat-followup-bg); color: var(--cat-followup); border-color: #fdba74; }
+    .filter-chip.chip-followup.active { background: var(--cat-followup); color: white; }
+    .filter-divider { width: 1px; height: 20px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+
+    /* ── Radar board (4 columns) ── */
+    .radar-board {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      padding: 16px 20px;
+      flex: 1;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .radar-column { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+    .col-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; border-radius: var(--radius); flex-shrink: 0; border: 1.5px solid;
+    }
+    .col-header.zone-hot    { background: var(--hot-bg);        border-color: var(--hot-border); }
+    .col-header.zone-approaching { background: var(--approaching-bg); border-color: var(--approaching-border); }
+    .col-header.zone-parked { background: var(--parked-bg);     border-color: var(--parked-border); }
+    .col-header.zone-invest { background: var(--invest-bg);     border-color: var(--invest-border); }
+    .col-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+    .col-title.zone-hot    { color: var(--hot); }
+    .col-title.zone-approaching { color: var(--approaching); }
+    .col-title.zone-parked { color: var(--parked); }
+    .col-title.zone-invest { color: var(--invest); }
+    .col-count { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+    .col-items {
+      overflow-y: auto; display: flex; flex-direction: column; gap: 7px;
+      flex: 1; padding-bottom: 8px;
+    }
+    .col-items::-webkit-scrollbar { width: 4px; }
+    .col-items::-webkit-scrollbar-track { background: transparent; }
+    .col-items::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+
+    /* ── Item cards ── */
+    .item-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid transparent;
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: box-shadow 0.15s;
+      position: relative;
+    }
+    .item-card:hover { box-shadow: var(--shadow-md); }
+    .item-card.cat-my_commitment  { border-left-color: var(--cat-mine); }
+    .item-card.cat-their_commitment { border-left-color: var(--cat-theirs); }
+    .item-card.cat-waiting        { border-left-color: var(--cat-waiting); }
+    .item-card.cat-risk           { border-left-color: var(--cat-risk); }
+    .item-card.cat-decision       { border-left-color: var(--cat-decision); }
+    .item-card.cat-followup       { border-left-color: var(--cat-followup); }
+    .item-card.is-done { opacity: 0.55; }
+    .card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; gap: 6px; }
+    .cat-badge {
+      font-size: 10px; font-weight: 700; padding: 2px 7px;
+      border-radius: 10px; text-transform: uppercase; letter-spacing: .3px; white-space: nowrap;
+    }
+    .cat-badge.cat-my_commitment  { background: var(--cat-mine-bg);     color: var(--cat-mine); }
+    .cat-badge.cat-their_commitment { background: var(--cat-theirs-bg); color: var(--cat-theirs); }
+    .cat-badge.cat-waiting        { background: var(--cat-waiting-bg);  color: var(--cat-waiting); }
+    .cat-badge.cat-risk           { background: var(--cat-risk-bg);     color: var(--cat-risk); }
+    .cat-badge.cat-decision       { background: var(--cat-decision-bg); color: var(--cat-decision); }
+    .cat-badge.cat-followup       { background: var(--cat-followup-bg); color: var(--cat-followup); }
+    .confidence-dot { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+    .confidence-dot.high   { color: #059669; }
+    .confidence-dot.medium { color: #d97706; }
+    .confidence-dot.low    { color: #94a3b8; }
+    .card-desc { font-size: 12px; color: var(--text); line-height: 1.4; margin-bottom: 6px; }
+    .card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .card-owner { font-size: 11px; color: var(--text-muted); }
+    .card-owner strong { color: #475569; }
+    .card-due { font-size: 11px; }
+    .card-due.overdue { color: #ef4444; font-weight: 600; }
+    .card-due.soon    { color: #d97706; font-weight: 600; }
+    .card-due.normal  { color: var(--text-muted); }
+    .age-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 8px;
+      background: #fef2f2; color: #ef4444; font-weight: 600;
+    }
+    .card-actions {
+      display: none; gap: 4px; margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+    .item-card:hover .card-actions { display: flex; }
+    .zone-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 600;
+    }
+    .zone-badge.zone-hot        { background: var(--hot-bg);        color: var(--hot); }
+    .zone-badge.zone-approaching { background: var(--approaching-bg); color: var(--approaching); }
+    .zone-badge.zone-parked     { background: var(--parked-bg);     color: var(--parked); }
+    .zone-badge.zone-invest     { background: var(--invest-bg);     color: var(--invest); }
+    .locked-icon { font-size: 10px; color: var(--text-light); margin-left: 2px; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 40px 20px; text-align: center; color: var(--text-muted);
+      height: 100%;
+    }
+    .empty-icon { font-size: 32px; margin-bottom: 12px; }
+    .empty-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+    .empty-body { font-size: 13px; margin-bottom: 16px; }
+
+    /* ── Modals (transplant from ClearThread CSS) ── */
+    .overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.4); z-index: 1000;
+      align-items: center; justify-content: center;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      background: var(--surface); border-radius: 12px;
+      box-shadow: var(--shadow-md); width: 560px; max-width: 95vw;
+      max-height: 90vh; display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .modal-title { font-size: 16px; font-weight: 600; }
+    .modal-close {
+      background: none; border: none; cursor: pointer; font-size: 18px;
+      color: var(--text-muted); padding: 2px 6px; border-radius: 4px;
+    }
+    .modal-close:hover { background: var(--bg); color: var(--text); }
+    .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
+    .modal-footer {
+      padding: 16px 20px; border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0;
+    }
+    .form-group { margin-bottom: 16px; }
+    .form-group:last-child { margin-bottom: 0; }
+    .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .4px; }
+    .form-control {
+      width: 100%; padding: 8px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); font-size: 13px; color: var(--text);
+      background: var(--surface); transition: border-color 0.15s;
+    }
+    .form-control:focus { outline: none; border-color: #2563eb; }
+    textarea.form-control { resize: vertical; }
+
+    /* ── Import modal tabs ── */
+    .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+    .tab-btn {
+      padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+      border: none; background: none; color: var(--text-muted);
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
+
+    /* ── Progress / extracting state ── */
+    .extracting-view {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center; padding: 40px 20px; text-align: center; gap: 16px;
+    }
+    .extracting-view.active { display: flex; }
+    .spinner {
+      width: 32px; height: 32px; border: 3px solid var(--border);
+      border-top-color: #2563eb; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-label { font-size: 13px; color: var(--text-muted); }
+
+    /* ── Preview list ── */
+    .preview-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); margin-bottom: 8px; background: var(--surface);
+    }
+    .preview-item-remove {
+      background: none; border: none; cursor: pointer; color: var(--text-light);
+      font-size: 16px; padding: 0; line-height: 1; flex-shrink: 0; margin-top: 1px;
+    }
+    .preview-item-remove:hover { color: #ef4444; }
+    .preview-item-body { flex: 1; min-width: 0; }
+    .preview-item-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+    .preview-item-desc { font-size: 12px; color: var(--text); }
+    .invest-toggle {
+      font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px;
+      cursor: pointer; border: 1.5px solid; transition: all 0.15s;
+      background: var(--invest-bg); color: var(--invest); border-color: var(--invest-border);
+    }
+    .invest-toggle.off { background: #f1f5f9; color: var(--text-muted); border-color: var(--border); }
+
+    /* ── Source snippet ── */
+    .source-toggle { font-size: 11px; color: var(--text-light); cursor: pointer; margin-top: 4px; display: inline-block; }
+    .source-toggle:hover { color: var(--text-muted); }
+    .source-snippet { display: none; font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 4px; padding: 6px 8px; background: var(--bg); border-radius: 4px; }
+    .source-snippet.open { display: block; }
+
+    /* ── File info panel ── */
+    .file-info-panel {
+      display: none; margin-top: 12px; padding: 12px;
+      background: var(--bg); border-radius: var(--radius);
+      font-size: 12px; color: var(--text-muted);
+    }
+    .file-info-panel.visible { display: block; }
+    .file-info-row { margin-bottom: 3px; }
+    .file-info-row strong { color: var(--text); }
+
+    /* ── Key input (settings) ── */
+    .key-input-wrap { position: relative; }
+    .key-toggle {
+      position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; font-size: 16px; padding: 2px;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1e293b; color: white; padding: 10px 20px; border-radius: 8px;
+      font-size: 13px; font-weight: 500; z-index: 9999;
+      opacity: 0; transition: opacity 0.2s; pointer-events: none;
+    }
+    #toast.show { opacity: 1; }
+    #toast.error { background: #ef4444; }
+    #toast.success { background: #059669; }
+
+    /* ── Select mode ── */
+    .item-card.selectable { cursor: pointer; }
+    .item-card.selected { outline: 2px solid #2563eb; outline-offset: 1px; background: #eff6ff; }
+    .card-checkbox { display: none; margin-right: 4px; }
+    .item-card.selectable .card-checkbox { display: inline-block; }
+    .select-bar {
+      display: none; align-items: center; gap: 8px;
+      padding: 6px 20px; background: #eff6ff; border-bottom: 1px solid #93c5fd;
+      font-size: 13px; color: #2563eb; flex-shrink: 0;
+    }
+    .select-bar.active { display: flex; }
+  </style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══ -->
+<header>
+  <div class="logo">Commitment<span>Radar</span></div>
+  <div class="header-actions">
+    <button class="btn btn-ghost" id="select-btn">☐ Select</button>
+    <button class="btn btn-secondary" id="settings-btn">⚙ Settings</button>
+    <button class="btn btn-primary" id="import-btn">＋ Import Thread</button>
+  </div>
+</header>
+
+<!-- ═══ SELECT BAR ═══ -->
+<div class="select-bar" id="select-bar">
+  <span id="select-count">0 selected</span>
+  <button class="btn btn-sm btn-secondary" id="select-all-btn">Select All</button>
+  <button class="btn btn-sm btn-danger" id="delete-selected-btn" style="display:none">Delete Selected</button>
+  <button class="btn btn-sm btn-secondary" id="select-cancel-btn">Cancel</button>
+  <span style="margin-left:auto">
+    <button class="btn btn-sm btn-secondary" id="delete-done-btn" style="display:none">🗑 Delete Done</button>
+  </span>
+</div>
+
+<!-- ═══ FILTER BAR ═══ -->
+<div class="filter-bar">
+  <span class="filter-label">Filter:</span>
+  <button class="filter-chip active" data-cat="all">All</button>
+  <button class="filter-chip chip-mine"    data-cat="my_commitment">My Commitment</button>
+  <button class="filter-chip chip-theirs"  data-cat="their_commitment">Their Commitment</button>
+  <button class="filter-chip chip-waiting" data-cat="waiting">Waiting On</button>
+  <button class="filter-chip chip-risk"    data-cat="risk">Risk</button>
+  <button class="filter-chip chip-decision" data-cat="decision">Decision Needed</button>
+  <button class="filter-chip chip-followup" data-cat="followup">Follow-up</button>
+  <div class="filter-divider"></div>
+  <button class="filter-chip active" data-status="open">Open</button>
+  <button class="filter-chip" data-status="done">Done</button>
+  <button class="filter-chip" data-status="snoozed">Snoozed</button>
+  <button class="filter-chip" data-status="all">All Status</button>
+</div>
+
+<!-- ═══ RADAR BOARD ═══ -->
+<div class="radar-board">
+  <div class="radar-column" id="col-hot">
+    <div class="col-header zone-hot">
+      <span class="col-title zone-hot">🔴 Hot</span>
+      <span class="col-count" id="count-hot">0</span>
+    </div>
+    <div class="col-items" id="items-hot"></div>
+  </div>
+  <div class="radar-column" id="col-approaching">
+    <div class="col-header zone-approaching">
+      <span class="col-title zone-approaching">🟡 Approaching</span>
+      <span class="col-count" id="count-approaching">0</span>
+    </div>
+    <div class="col-items" id="items-approaching"></div>
+  </div>
+  <div class="radar-column" id="col-parked">
+    <div class="col-header zone-parked">
+      <span class="col-title zone-parked">🔵 Parked</span>
+      <span class="col-count" id="count-parked">0</span>
+    </div>
+    <div class="col-items" id="items-parked"></div>
+  </div>
+  <div class="radar-column" id="col-invest">
+    <div class="col-header zone-invest">
+      <span class="col-title zone-invest">🟣 Invest</span>
+      <span class="col-count" id="count-invest">0</span>
+    </div>
+    <div class="col-items" id="items-invest"></div>
+  </div>
+</div>
+
+<!-- ═══ IMPORT MODAL ═══ -->
+<!-- (populated in Task 8) -->
+
+<!-- ═══ EDIT MODAL ═══ -->
+<!-- (populated in Task 9) -->
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<!-- (populated in Task 5) -->
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Web Worker script -->
+<!-- (populated in Task 7) -->
+
+<!-- Main JS -->
+<script>
+// placeholder — populated task by task
+</script>
+
+</body>
+</html>
