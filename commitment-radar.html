@@ -452,7 +452,134 @@
 
 <!-- Main JS -->
 <script>
-// placeholder — populated task by task
+// ─────────────────────────────────────────────
+// Firebase Config (same project as ClearThread)
+// ─────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyDeXbtC_hUNZJnNRZWaOo9UjGe0WVVWty0",
+  authDomain: "milestone-tracker-955f4.firebaseapp.com",
+  projectId: "milestone-tracker-955f4",
+  storageBucket: "milestone-tracker-955f4.firebasestorage.app",
+  messagingSenderId: "359863264645",
+  appId: "1:359863264645:web:489bcb87327ed73c0190ec"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// ─────────────────────────────────────────────
+// App State
+// ─────────────────────────────────────────────
+const state = {
+  items: [],
+  filterCat: 'all',
+  filterStatus: 'open',
+  apiKey: localStorage.getItem('radar_api_key') || '',
+  model: localStorage.getItem('radar_model') || 'claude-opus-4-6',
+  workspaceContext: localStorage.getItem('radar_workspace_context') || '',
+  previewItems: [],
+  previewDupeCount: 0,
+  previewInvestToggles: {},  // id -> boolean (true = send to invest)
+  extractedThreadName: '',
+  importStep: 'input',  // 'input' | 'extracting' | 'preview'
+  importTab: 'paste',   // 'paste' | 'file'
+  fileContent: null,
+  worker: null,
+  selectMode: false,
+  selectedIds: new Set(),
+};
+
+// ─────────────────────────────────────────────
+// Firestore Helpers
+// ─────────────────────────────────────────────
+function listenItems() {
+  db.collection('radar_items')
+    .orderBy('createdAt', 'desc')
+    .onSnapshot(snap => {
+      state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderAll();
+      runAgingEngine();
+    }, err => {
+      console.error('Firestore error:', err);
+      showToast('Database connection error', 'error');
+    });
+}
+
+async function saveItemsBatch(items, threadId, threadTitle) {
+  const batch = db.batch();
+  const threadRef = db.collection('radar_threads').doc(threadId);
+  batch.set(threadRef, {
+    title: threadTitle,
+    importedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  items.forEach(item => {
+    const ref = db.collection('radar_items').doc();
+    batch.set(ref, {
+      ...item,
+      threadId,
+      threadTitle,
+      status: 'open',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  // Re-fetch immediately so dashboard updates without waiting for onSnapshot
+  const snap = await db.collection('radar_items').orderBy('createdAt', 'desc').get();
+  state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  renderAll();
+}
+
+async function updateItem(id, data) {
+  const updateData = {
+    ...data,
+    lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+  await db.collection('radar_items').doc(id).update(updateData);
+}
+
+async function deleteItem(id) {
+  await db.collection('radar_items').doc(id).delete();
+}
+
+async function deleteManyItems(ids) {
+  const batch = db.batch();
+  ids.forEach(id => batch.delete(db.collection('radar_items').doc(id)));
+  await batch.commit();
+}
+
+// ─────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────
+function escHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+let toastTimer;
+function showToast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show' + (type ? ' ' + type : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+}
+
+// Stub for renderAll — replaced in Task 3
+function renderAll() {}
+
+// Stub for runAgingEngine — replaced in Task 11
+function runAgingEngine() {}
+
+// ─────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  listenItems();
+});
 </script>
 
 </body>
