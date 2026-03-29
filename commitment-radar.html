@@ -770,6 +770,26 @@ function updateDeleteDoneBtn() {
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   listenItems();
+
+  // Category filter chips
+  document.querySelectorAll('[data-cat]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-cat]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.filterCat = btn.dataset.cat;
+      renderAll();
+    });
+  });
+
+  // Status filter chips
+  document.querySelectorAll('[data-status]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-status]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.filterStatus = btn.dataset.status;
+      renderAll();
+    });
+  });
 });
 </script>
 
