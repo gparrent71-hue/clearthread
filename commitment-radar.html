@@ -655,7 +655,7 @@ function getAgeDays(item) {
 function getDueDateClass(dueDateStr) {
   if (!dueDateStr) return '';
   const parsed = parseDueDate(dueDateStr);
-  if (!parsed) return 'normal';
+  if (!parsed) return '';
   const days = Math.round((parsed - new Date()) / (1000 * 60 * 60 * 24));
   if (days < 0) return 'overdue';
   if (days <= 7) return 'soon';
