@@ -442,7 +442,60 @@
 <!-- (populated in Task 9) -->
 
 <!-- ═══ SETTINGS MODAL ═══ -->
-<!-- (populated in Task 5) -->
+<div class="overlay" id="settings-overlay">
+  <div class="modal" style="width:480px">
+    <div class="modal-header">
+      <span class="modal-title">Settings</span>
+      <button class="modal-close" id="settings-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Claude API Key</label>
+        <div class="key-input-wrap">
+          <input type="password" class="form-control" id="api-key-input"
+            placeholder="sk-ant-…" style="padding-right:40px">
+          <button class="key-toggle" id="key-toggle">👁</button>
+        </div>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          Stored only in this browser's localStorage. Get a key at
+          <strong>console.anthropic.com</strong> → API Keys.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Model</label>
+        <select class="form-control" id="model-select">
+          <option value="claude-opus-4-6">Claude Opus 4.6 — most capable (~$0.01–0.05/thread)</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — balanced (~$0.003–0.01/thread)</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest/cheapest (~$0.001–0.005/thread)</option>
+        </select>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          File imports always use Haiku regardless of selection (rate limit safety).
+          This setting applies to paste-tab extraction only.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Workspace Context</label>
+        <textarea class="form-control" id="workspace-context" rows="6"
+          placeholder="Describe your key projects, people, and roles. Claude uses this to make better judgments about ownership and priority.
+
+Example:
+I'm a project manager at a civil engineering firm working on TxDOT projects in Houston.
+Key projects: D3895600 (traffic study, high risk), WHXK4712 (environmental, tight schedule).
+Key people: Marcus = PM on D3895600, Jordan = junior engineer I'm mentoring.
+Sarah = TxDOT district contact (important client relationship).
+
+Keep under ~500 words."></textarea>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          Injected into every Claude call. Helps Claude identify ownership, priority, and Invest candidates.
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="settings-cancel">Cancel</button>
+      <button class="btn btn-primary" id="settings-save">Save Settings</button>
+    </div>
+  </div>
+</div>
 
 <!-- Toast -->
 <div id="toast"></div>
@@ -766,6 +819,20 @@ function updateDeleteDoneBtn() {
 }
 
 // ─────────────────────────────────────────────
+// Settings Modal
+// ─────────────────────────────────────────────
+function openSettings() {
+  document.getElementById('api-key-input').value = state.apiKey;
+  document.getElementById('model-select').value = state.model;
+  document.getElementById('workspace-context').value = state.workspaceContext;
+  document.getElementById('settings-overlay').classList.add('open');
+}
+
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('open');
+}
+
+// ─────────────────────────────────────────────
 // Init
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -789,6 +856,29 @@ document.addEventListener('DOMContentLoaded', () => {
       state.filterStatus = btn.dataset.status;
       renderAll();
     });
+  });
+
+  document.getElementById('settings-btn').addEventListener('click', openSettings);
+  document.getElementById('settings-close').addEventListener('click', closeSettings);
+  document.getElementById('settings-cancel').addEventListener('click', closeSettings);
+  document.getElementById('settings-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('settings-overlay')) closeSettings();
+  });
+
+  document.getElementById('key-toggle').addEventListener('click', () => {
+    const inp = document.getElementById('api-key-input');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  });
+
+  document.getElementById('settings-save').addEventListener('click', () => {
+    state.apiKey = document.getElementById('api-key-input').value.trim();
+    state.model = document.getElementById('model-select').value;
+    state.workspaceContext = document.getElementById('workspace-context').value;
+    localStorage.setItem('radar_api_key', state.apiKey);
+    localStorage.setItem('radar_model', state.model);
+    localStorage.setItem('radar_workspace_context', state.workspaceContext);
+    closeSettings();
+    showToast('Settings saved', 'success');
   });
 });
 </script>
