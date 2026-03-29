@@ -1,0 +1,2480 @@
+# Commitment Radar Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build `commitment-radar.html` — a single-file personal commitment tracker that extracts promises and obligations from emails/notes using Claude, displays them in a 4-column heat-zone dashboard (Hot / Approaching / Parked / Invest), and ages items automatically.
+
+**Architecture:** New standalone file transplanting ClearThread's proven infrastructure (Firebase, Claude API, Web Worker, preprocessing) and building a new dashboard, data model, and system prompt on top. No build system — open directly in Chrome.
+
+**Tech Stack:** Vanilla HTML/CSS/JS · Firebase Firestore (project `milestone-tracker-955f4`) · Claude API (Opus 4.6 / Sonnet 4.6 / Haiku 4.5) · Web Worker for chunked file processing
+
+---
+
+## Reference Files
+
+- **ClearThread source:** `/Users/gp/Documents/clearthread-repo/index.html` (1997 lines) — transplant source
+- **Design spec:** `docs/superpowers/specs/2026-03-29-commitment-radar-design.md`
+- **Output file:** `/Users/gp/Documents/clearthread-repo/commitment-radar.html`
+- **Repo:** `gparrent71-hue/clearthread` → deploy to GitHub Pages
+
+### Key ClearThread line references (for transplanting)
+| What | Lines |
+|---|---|
+| Firebase CDN scripts | 8–10 |
+| CSS design system (variables, buttons, modals) | 12–503 |
+| Import modal HTML | 503–616 |
+| Edit modal HTML | 618–670 |
+| Settings modal HTML | 672–707 |
+| Toast element | 710–711 |
+| Web Worker `<script>` block | 713–915 |
+| Firebase config + `db` init | 922–931 |
+| App state object | 937–953 |
+| Firestore helpers (`listenItems`, `saveItemsBatch`, `updateItem`, `deleteItem`) | 958–995 |
+| `sanitizeJson` | 1002–1014 |
+| `extractFromText` | 1052–1099 |
+| `getFilteredItems` | 1109–1116 |
+| `renderItemCard` | 1194–1304 |
+| `wordSimilarity`, `findDuplicates` | 1306–1333 |
+| `openImport`, `resetImport` | 1436–1518 |
+| `splitIntoChunks` (main thread version) | 1520–1559 |
+| `preprocessEmails` (main thread) | 1562–1645 |
+| `doExtraction` | 1647–1832 |
+| `showToast` | 1834–1843 |
+| All event listeners (bottom of file) | 1845–1997 |
+
+---
+
+## Task 1: Scaffold — HTML structure + CSS design system
+
+**Files:**
+- Create: `commitment-radar.html`
+
+- [ ] **Step 1: Create the file with HTML skeleton, Firebase CDN, and CSS design system**
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Commitment Radar</title>
+
+  <!-- Firebase (same CDN as ClearThread index.html lines 8-10) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f0f4f8;
+      --surface: #ffffff;
+      --surface-hover: #f8fafc;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --text-light: #94a3b8;
+      --header-h: 56px;
+      --radius: 8px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+
+      /* Zone colors */
+      --hot: #ef4444;
+      --hot-bg: #fef2f2;
+      --hot-border: #fca5a5;
+      --approaching: #f59e0b;
+      --approaching-bg: #fffbeb;
+      --approaching-border: #fcd34d;
+      --parked: #3b82f6;
+      --parked-bg: #eff6ff;
+      --parked-border: #93c5fd;
+      --invest: #8b5cf6;
+      --invest-bg: #f5f3ff;
+      --invest-border: #c4b5fd;
+
+      /* Category colors */
+      --cat-mine: #2563eb;
+      --cat-mine-bg: #eff6ff;
+      --cat-theirs: #d97706;
+      --cat-theirs-bg: #fef3c7;
+      --cat-waiting: #7c3aed;
+      --cat-waiting-bg: #f5f3ff;
+      --cat-risk: #ef4444;
+      --cat-risk-bg: #fef2f2;
+      --cat-decision: #059669;
+      --cat-decision-bg: #ecfdf5;
+      --cat-followup: #ea580c;
+      --cat-followup-bg: #fff7ed;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      height: var(--header-h);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      flex-shrink: 0;
+    }
+    .logo { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+    .logo span { color: var(--hot); }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+
+    /* ── Buttons (transplant from ClearThread, same classes) ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: var(--radius);
+      font-size: 13px; font-weight: 500; cursor: pointer;
+      border: none; transition: all 0.15s;
+    }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--surface-hover); }
+    .btn-ghost { background: transparent; color: var(--text-muted); border: none; padding: 6px 10px; }
+    .btn-ghost:hover { background: var(--bg); color: var(--text); }
+    .btn-danger { background: #ef4444; color: white; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+    /* ── Filter bar ── */
+    .filter-bar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 20px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .filter-label { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-right: 2px; text-transform: uppercase; letter-spacing: .5px; }
+    .filter-chip {
+      padding: 4px 11px; border-radius: 20px; font-size: 11px; font-weight: 600;
+      cursor: pointer; border: 1.5px solid transparent; transition: all 0.15s;
+      background: #f1f5f9; color: #475569; border-color: #cbd5e1;
+    }
+    .filter-chip:hover { opacity: 0.8; }
+    .filter-chip.active { background: #1e293b; color: white; border-color: #1e293b; }
+    .filter-chip.chip-mine { background: var(--cat-mine-bg); color: var(--cat-mine); border-color: #93c5fd; }
+    .filter-chip.chip-mine.active { background: var(--cat-mine); color: white; }
+    .filter-chip.chip-theirs { background: var(--cat-theirs-bg); color: var(--cat-theirs); border-color: #fcd34d; }
+    .filter-chip.chip-theirs.active { background: var(--cat-theirs); color: white; }
+    .filter-chip.chip-waiting { background: var(--cat-waiting-bg); color: var(--cat-waiting); border-color: #c4b5fd; }
+    .filter-chip.chip-waiting.active { background: var(--cat-waiting); color: white; }
+    .filter-chip.chip-risk { background: var(--cat-risk-bg); color: var(--cat-risk); border-color: var(--hot-border); }
+    .filter-chip.chip-risk.active { background: var(--cat-risk); color: white; }
+    .filter-chip.chip-decision { background: var(--cat-decision-bg); color: var(--cat-decision); border-color: #6ee7b7; }
+    .filter-chip.chip-decision.active { background: var(--cat-decision); color: white; }
+    .filter-chip.chip-followup { background: var(--cat-followup-bg); color: var(--cat-followup); border-color: #fdba74; }
+    .filter-chip.chip-followup.active { background: var(--cat-followup); color: white; }
+    .filter-divider { width: 1px; height: 20px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+
+    /* ── Radar board (4 columns) ── */
+    .radar-board {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      padding: 16px 20px;
+      flex: 1;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .radar-column { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+    .col-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; border-radius: var(--radius); flex-shrink: 0; border: 1.5px solid;
+    }
+    .col-header.zone-hot    { background: var(--hot-bg);        border-color: var(--hot-border); }
+    .col-header.zone-approaching { background: var(--approaching-bg); border-color: var(--approaching-border); }
+    .col-header.zone-parked { background: var(--parked-bg);     border-color: var(--parked-border); }
+    .col-header.zone-invest { background: var(--invest-bg);     border-color: var(--invest-border); }
+    .col-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+    .col-title.zone-hot    { color: var(--hot); }
+    .col-title.zone-approaching { color: var(--approaching); }
+    .col-title.zone-parked { color: var(--parked); }
+    .col-title.zone-invest { color: var(--invest); }
+    .col-count { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+    .col-items {
+      overflow-y: auto; display: flex; flex-direction: column; gap: 7px;
+      flex: 1; padding-bottom: 8px;
+    }
+    .col-items::-webkit-scrollbar { width: 4px; }
+    .col-items::-webkit-scrollbar-track { background: transparent; }
+    .col-items::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+
+    /* ── Item cards ── */
+    .item-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid transparent;
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: box-shadow 0.15s;
+      position: relative;
+    }
+    .item-card:hover { box-shadow: var(--shadow-md); }
+    .item-card.cat-my_commitment  { border-left-color: var(--cat-mine); }
+    .item-card.cat-their_commitment { border-left-color: var(--cat-theirs); }
+    .item-card.cat-waiting        { border-left-color: var(--cat-waiting); }
+    .item-card.cat-risk           { border-left-color: var(--cat-risk); }
+    .item-card.cat-decision       { border-left-color: var(--cat-decision); }
+    .item-card.cat-followup       { border-left-color: var(--cat-followup); }
+    .item-card.is-done { opacity: 0.55; }
+    .card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; gap: 6px; }
+    .cat-badge {
+      font-size: 10px; font-weight: 700; padding: 2px 7px;
+      border-radius: 10px; text-transform: uppercase; letter-spacing: .3px; white-space: nowrap;
+    }
+    .cat-badge.cat-my_commitment  { background: var(--cat-mine-bg);     color: var(--cat-mine); }
+    .cat-badge.cat-their_commitment { background: var(--cat-theirs-bg); color: var(--cat-theirs); }
+    .cat-badge.cat-waiting        { background: var(--cat-waiting-bg);  color: var(--cat-waiting); }
+    .cat-badge.cat-risk           { background: var(--cat-risk-bg);     color: var(--cat-risk); }
+    .cat-badge.cat-decision       { background: var(--cat-decision-bg); color: var(--cat-decision); }
+    .cat-badge.cat-followup       { background: var(--cat-followup-bg); color: var(--cat-followup); }
+    .confidence-dot { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+    .confidence-dot.high   { color: #059669; }
+    .confidence-dot.medium { color: #d97706; }
+    .confidence-dot.low    { color: #94a3b8; }
+    .card-desc { font-size: 12px; color: var(--text); line-height: 1.4; margin-bottom: 6px; }
+    .card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .card-owner { font-size: 11px; color: var(--text-muted); }
+    .card-owner strong { color: #475569; }
+    .card-due { font-size: 11px; }
+    .card-due.overdue { color: #ef4444; font-weight: 600; }
+    .card-due.soon    { color: #d97706; font-weight: 600; }
+    .card-due.normal  { color: var(--text-muted); }
+    .age-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 8px;
+      background: #fef2f2; color: #ef4444; font-weight: 600;
+    }
+    .card-actions {
+      display: none; gap: 4px; margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+    .item-card:hover .card-actions { display: flex; }
+    .zone-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 600;
+    }
+    .zone-badge.zone-hot        { background: var(--hot-bg);        color: var(--hot); }
+    .zone-badge.zone-approaching { background: var(--approaching-bg); color: var(--approaching); }
+    .zone-badge.zone-parked     { background: var(--parked-bg);     color: var(--parked); }
+    .zone-badge.zone-invest     { background: var(--invest-bg);     color: var(--invest); }
+    .locked-icon { font-size: 10px; color: var(--text-light); margin-left: 2px; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 40px 20px; text-align: center; color: var(--text-muted);
+      height: 100%;
+    }
+    .empty-icon { font-size: 32px; margin-bottom: 12px; }
+    .empty-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+    .empty-body { font-size: 13px; margin-bottom: 16px; }
+
+    /* ── Modals (transplant from ClearThread CSS) ── */
+    .overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.4); z-index: 1000;
+      align-items: center; justify-content: center;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      background: var(--surface); border-radius: 12px;
+      box-shadow: var(--shadow-md); width: 560px; max-width: 95vw;
+      max-height: 90vh; display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .modal-title { font-size: 16px; font-weight: 600; }
+    .modal-close {
+      background: none; border: none; cursor: pointer; font-size: 18px;
+      color: var(--text-muted); padding: 2px 6px; border-radius: 4px;
+    }
+    .modal-close:hover { background: var(--bg); color: var(--text); }
+    .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
+    .modal-footer {
+      padding: 16px 20px; border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0;
+    }
+    .form-group { margin-bottom: 16px; }
+    .form-group:last-child { margin-bottom: 0; }
+    .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .4px; }
+    .form-control {
+      width: 100%; padding: 8px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); font-size: 13px; color: var(--text);
+      background: var(--surface); transition: border-color 0.15s;
+    }
+    .form-control:focus { outline: none; border-color: #2563eb; }
+    textarea.form-control { resize: vertical; }
+
+    /* ── Import modal tabs ── */
+    .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+    .tab-btn {
+      padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+      border: none; background: none; color: var(--text-muted);
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
+
+    /* ── Progress / extracting state ── */
+    .extracting-view {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center; padding: 40px 20px; text-align: center; gap: 16px;
+    }
+    .extracting-view.active { display: flex; }
+    .spinner {
+      width: 32px; height: 32px; border: 3px solid var(--border);
+      border-top-color: #2563eb; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-label { font-size: 13px; color: var(--text-muted); }
+
+    /* ── Preview list ── */
+    .preview-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); margin-bottom: 8px; background: var(--surface);
+    }
+    .preview-item-remove {
+      background: none; border: none; cursor: pointer; color: var(--text-light);
+      font-size: 16px; padding: 0; line-height: 1; flex-shrink: 0; margin-top: 1px;
+    }
+    .preview-item-remove:hover { color: #ef4444; }
+    .preview-item-body { flex: 1; min-width: 0; }
+    .preview-item-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+    .preview-item-desc { font-size: 12px; color: var(--text); }
+    .invest-toggle {
+      font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px;
+      cursor: pointer; border: 1.5px solid; transition: all 0.15s;
+      background: var(--invest-bg); color: var(--invest); border-color: var(--invest-border);
+    }
+    .invest-toggle.off { background: #f1f5f9; color: var(--text-muted); border-color: var(--border); }
+
+    /* ── Source snippet ── */
+    .source-toggle { font-size: 11px; color: var(--text-light); cursor: pointer; margin-top: 4px; display: inline-block; }
+    .source-toggle:hover { color: var(--text-muted); }
+    .source-snippet { display: none; font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 4px; padding: 6px 8px; background: var(--bg); border-radius: 4px; }
+    .source-snippet.open { display: block; }
+
+    /* ── File info panel ── */
+    .file-info-panel {
+      display: none; margin-top: 12px; padding: 12px;
+      background: var(--bg); border-radius: var(--radius);
+      font-size: 12px; color: var(--text-muted);
+    }
+    .file-info-panel.visible { display: block; }
+    .file-info-row { margin-bottom: 3px; }
+    .file-info-row strong { color: var(--text); }
+
+    /* ── Key input (settings) ── */
+    .key-input-wrap { position: relative; }
+    .key-toggle {
+      position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; font-size: 16px; padding: 2px;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1e293b; color: white; padding: 10px 20px; border-radius: 8px;
+      font-size: 13px; font-weight: 500; z-index: 9999;
+      opacity: 0; transition: opacity 0.2s; pointer-events: none;
+    }
+    #toast.show { opacity: 1; }
+    #toast.error { background: #ef4444; }
+    #toast.success { background: #059669; }
+
+    /* ── Select mode ── */
+    .item-card.selectable { cursor: pointer; }
+    .item-card.selected { outline: 2px solid #2563eb; outline-offset: 1px; background: #eff6ff; }
+    .card-checkbox { display: none; margin-right: 4px; }
+    .item-card.selectable .card-checkbox { display: inline-block; }
+    .select-bar {
+      display: none; align-items: center; gap: 8px;
+      padding: 6px 20px; background: #eff6ff; border-bottom: 1px solid #93c5fd;
+      font-size: 13px; color: #2563eb; flex-shrink: 0;
+    }
+    .select-bar.active { display: flex; }
+  </style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══ -->
+<header>
+  <div class="logo">Commitment<span>Radar</span></div>
+  <div class="header-actions">
+    <button class="btn btn-ghost" id="select-btn">☐ Select</button>
+    <button class="btn btn-secondary" id="settings-btn">⚙ Settings</button>
+    <button class="btn btn-primary" id="import-btn">＋ Import Thread</button>
+  </div>
+</header>
+
+<!-- ═══ SELECT BAR ═══ -->
+<div class="select-bar" id="select-bar">
+  <span id="select-count">0 selected</span>
+  <button class="btn btn-sm btn-secondary" id="select-all-btn">Select All</button>
+  <button class="btn btn-sm btn-danger" id="delete-selected-btn" style="display:none">Delete Selected</button>
+  <button class="btn btn-sm btn-secondary" id="select-cancel-btn">Cancel</button>
+  <span style="margin-left:auto">
+    <button class="btn btn-sm btn-secondary" id="delete-done-btn" style="display:none">🗑 Delete Done</button>
+  </span>
+</div>
+
+<!-- ═══ FILTER BAR ═══ -->
+<div class="filter-bar">
+  <span class="filter-label">Filter:</span>
+  <button class="filter-chip active" data-cat="all">All</button>
+  <button class="filter-chip chip-mine"    data-cat="my_commitment">My Commitment</button>
+  <button class="filter-chip chip-theirs"  data-cat="their_commitment">Their Commitment</button>
+  <button class="filter-chip chip-waiting" data-cat="waiting">Waiting On</button>
+  <button class="filter-chip chip-risk"    data-cat="risk">Risk</button>
+  <button class="filter-chip chip-decision" data-cat="decision">Decision Needed</button>
+  <button class="filter-chip chip-followup" data-cat="followup">Follow-up</button>
+  <div class="filter-divider"></div>
+  <button class="filter-chip active" data-status="open">Open</button>
+  <button class="filter-chip" data-status="done">Done</button>
+  <button class="filter-chip" data-status="snoozed">Snoozed</button>
+  <button class="filter-chip" data-status="all">All Status</button>
+</div>
+
+<!-- ═══ RADAR BOARD ═══ -->
+<div class="radar-board">
+  <div class="radar-column" id="col-hot">
+    <div class="col-header zone-hot">
+      <span class="col-title zone-hot">🔴 Hot</span>
+      <span class="col-count" id="count-hot">0</span>
+    </div>
+    <div class="col-items" id="items-hot"></div>
+  </div>
+  <div class="radar-column" id="col-approaching">
+    <div class="col-header zone-approaching">
+      <span class="col-title zone-approaching">🟡 Approaching</span>
+      <span class="col-count" id="count-approaching">0</span>
+    </div>
+    <div class="col-items" id="items-approaching"></div>
+  </div>
+  <div class="radar-column" id="col-parked">
+    <div class="col-header zone-parked">
+      <span class="col-title zone-parked">🔵 Parked</span>
+      <span class="col-count" id="count-parked">0</span>
+    </div>
+    <div class="col-items" id="items-parked"></div>
+  </div>
+  <div class="radar-column" id="col-invest">
+    <div class="col-header zone-invest">
+      <span class="col-title zone-invest">🟣 Invest</span>
+      <span class="col-count" id="count-invest">0</span>
+    </div>
+    <div class="col-items" id="items-invest"></div>
+  </div>
+</div>
+
+<!-- ═══ IMPORT MODAL ═══ -->
+<!-- (populated in Task 7) -->
+
+<!-- ═══ EDIT MODAL ═══ -->
+<!-- (populated in Task 15) -->
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<!-- (populated in Task 6) -->
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Web Worker script -->
+<!-- (populated in Task 9) -->
+
+<!-- Main JS -->
+<script>
+// placeholder — populated task by task
+</script>
+
+</body>
+</html>
+```
+
+- [ ] **Step 2: Verify the scaffold opens**
+
+Open `file:///Users/gp/Documents/clearthread-repo/commitment-radar.html` in Chrome.
+Expected: Page loads. Header shows "CommitmentRadar" (with red "Radar"). Four empty columns visible with colored headers. Filter bar across the top. No console errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd /Users/gp/Documents/clearthread-repo
+git add commitment-radar.html
+git commit -m "feat: scaffold commitment-radar.html — HTML structure and CSS design system"
+```
+
+---
+
+## Task 2: Firebase + Firestore helpers + app state
+
+**Files:**
+- Modify: `commitment-radar.html` — replace `<script>` placeholder
+
+- [ ] **Step 1: Add Firebase config, state object, and Firestore helpers inside the `<script>` tag**
+
+Replace `// placeholder — populated task by task` with:
+
+```javascript
+// ─────────────────────────────────────────────
+// Firebase Config (same project as ClearThread)
+// ─────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyDeXbtC_hUNZJnNRZWaOo9UjGe0WVVWty0",
+  authDomain: "milestone-tracker-955f4.firebaseapp.com",
+  projectId: "milestone-tracker-955f4",
+  storageBucket: "milestone-tracker-955f4.firebasestorage.app",
+  messagingSenderId: "359863264645",
+  appId: "1:359863264645:web:489bcb87327ed73c0190ec"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// ─────────────────────────────────────────────
+// App State
+// ─────────────────────────────────────────────
+const state = {
+  items: [],
+  filterCat: 'all',
+  filterStatus: 'open',
+  apiKey: localStorage.getItem('radar_api_key') || '',
+  model: localStorage.getItem('radar_model') || 'claude-opus-4-6',
+  workspaceContext: localStorage.getItem('radar_workspace_context') || '',
+  previewItems: [],
+  previewDupeCount: 0,
+  previewInvestToggles: {},  // id -> boolean (true = send to invest)
+  extractedThreadName: '',
+  importStep: 'input',  // 'input' | 'extracting' | 'preview'
+  importTab: 'paste',   // 'paste' | 'file'
+  fileContent: null,
+  worker: null,
+  selectMode: false,
+  selectedIds: new Set(),
+};
+
+// ─────────────────────────────────────────────
+// Firestore Helpers
+// ─────────────────────────────────────────────
+function listenItems() {
+  db.collection('radar_items')
+    .orderBy('createdAt', 'desc')
+    .onSnapshot(snap => {
+      state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderAll();
+      runAgingEngine();
+    }, err => {
+      console.error('Firestore error:', err);
+      showToast('Database connection error', 'error');
+    });
+}
+
+async function saveItemsBatch(items, threadId, threadTitle) {
+  const batch = db.batch();
+  const threadRef = db.collection('radar_threads').doc(threadId);
+  batch.set(threadRef, {
+    title: threadTitle,
+    importedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  items.forEach(item => {
+    const ref = db.collection('radar_items').doc();
+    batch.set(ref, {
+      ...item,
+      threadId,
+      threadTitle,
+      status: 'open',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  // Re-fetch immediately so dashboard updates without waiting for onSnapshot
+  const snap = await db.collection('radar_items').orderBy('createdAt', 'desc').get();
+  state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  renderAll();
+}
+
+async function updateItem(id, data) {
+  const updateData = {
+    ...data,
+    lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+  await db.collection('radar_items').doc(id).update(updateData);
+}
+
+async function deleteItem(id) {
+  await db.collection('radar_items').doc(id).delete();
+}
+
+async function deleteManyItems(ids) {
+  const batch = db.batch();
+  ids.forEach(id => batch.delete(db.collection('radar_items').doc(id)));
+  await batch.commit();
+}
+
+// ─────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────
+function escHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+let toastTimer;
+function showToast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show' + (type ? ' ' + type : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+}
+
+// Stub for renderAll — replaced in Task 4
+function renderAll() {}
+
+// Stub for runAgingEngine — replaced in Task 14
+function runAgingEngine() {}
+
+// ─────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  listenItems();
+});
+```
+
+- [ ] **Step 2: Verify Firebase connects**
+
+Open the file in Chrome, open DevTools Console. Expected: No errors. If you see "Missing or insufficient permissions", the Firestore security rules need updating (Task 18).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: Firebase config, Firestore helpers, and app state"
+```
+
+---
+
+## Task 3: Render engine — cards and columns
+
+**Files:**
+- Modify: `commitment-radar.html` — replace the stub `renderAll` and add render functions
+
+- [ ] **Step 1: Add the render functions after the `runAgingEngine` stub**
+
+Add the following after `function runAgingEngine() {}`:
+
+```javascript
+// ─────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────
+const CAT_LABELS = {
+  my_commitment: 'My Commitment',
+  their_commitment: 'Their Commitment',
+  waiting: 'Waiting On',
+  risk: 'Risk',
+  decision: 'Decision Needed',
+  followup: 'Follow-up',
+};
+
+const ZONE_ICONS = { hot: '🔴', approaching: '🟡', parked: '🔵', invest: '🟣' };
+
+function getFilteredItems() {
+  return state.items.filter(item => {
+    const catOk = state.filterCat === 'all' || item.category === state.filterCat;
+    const statusOk = state.filterStatus === 'all' || item.status === state.filterStatus;
+    return catOk && statusOk;
+  });
+}
+
+function getAgeDays(item) {
+  if (!item.lastActivityAt) return 0;
+  const last = item.lastActivityAt.toDate ? item.lastActivityAt.toDate() : new Date(item.lastActivityAt);
+  return Math.floor((Date.now() - last.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function getDueDateClass(dueDateStr) {
+  if (!dueDateStr) return '';
+  const parsed = parseDueDate(dueDateStr);
+  if (!parsed) return 'normal';
+  const days = Math.round((parsed - new Date()) / (1000 * 60 * 60 * 24));
+  if (days < 0) return 'overdue';
+  if (days <= 7) return 'soon';
+  return 'normal';
+}
+
+function renderItemCard(item) {
+  const ageDays = getAgeDays(item);
+  const showAgeBadge = item.zone !== 'invest' && item.status === 'open' && ageDays >= 7;
+  const dueCls = getDueDateClass(item.dueDate);
+  const isDone = item.status === 'done';
+
+  const selectCbs = state.selectMode
+    ? `<input type="checkbox" class="card-checkbox" ${state.selectedIds.has(item.id) ? 'checked' : ''}>`
+    : '';
+
+  const ageBadgeHtml = showAgeBadge
+    ? `<span class="age-badge">${ageDays}d no activity</span>`
+    : '';
+
+  const dueHtml = item.dueDate
+    ? `<span class="card-due ${dueCls}">📅 ${escHtml(item.dueDate)}</span>`
+    : '';
+
+  const ownerHtml = item.owner
+    ? `<span class="card-owner">Owner: <strong>${escHtml(item.owner)}</strong></span>`
+    : '';
+
+  const lockedHtml = item.zoneLocked ? `<span class="locked-icon" title="Zone locked">🔒</span>` : '';
+
+  const confidenceLabel = { high: '● High', medium: '● Med', low: '● Low' }[item.confidence] || '';
+  const confidenceCls = item.confidence || 'low';
+
+  const sourceHtml = item.sourceSnippet
+    ? `<span class="source-toggle" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle('open')">▸ source</span>
+       <div class="source-snippet">${escHtml(item.sourceSnippet)}</div>`
+    : '';
+
+  const doneBtn = item.status !== 'done'
+    ? `<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();markDone('${item.id}')">✓ Done</button>`
+    : `<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();reopenItem('${item.id}')">↺ Reopen</button>`;
+
+  const zoneMenu = `
+    <select class="btn btn-sm btn-secondary" style="font-size:11px;padding:3px 6px;cursor:pointer"
+      onchange="event.stopPropagation();moveToZone('${item.id}',this.value);this.value=''"
+      onclick="event.stopPropagation()">
+      <option value="">Move zone…</option>
+      <option value="hot">🔴 Hot</option>
+      <option value="approaching">🟡 Approaching</option>
+      <option value="parked">🔵 Parked</option>
+      <option value="invest">🟣 Invest</option>
+    </select>`;
+
+  const selectedCls = state.selectMode && state.selectedIds.has(item.id) ? ' selected' : '';
+  const selectableCls = state.selectMode ? ' selectable' : '';
+
+  return `
+    <div class="item-card cat-${item.category}${isDone ? ' is-done' : ''}${selectedCls}${selectableCls}"
+         data-id="${item.id}"
+         onclick="handleCardClick('${item.id}', event)">
+      ${selectCbs}
+      <div class="card-top">
+        <span class="cat-badge cat-${item.category}">${CAT_LABELS[item.category] || item.category}</span>
+        <span class="confidence-dot ${confidenceCls}">${escHtml(confidenceLabel)}</span>
+        ${lockedHtml}
+      </div>
+      <div class="card-desc">${escHtml(item.description)}</div>
+      <div class="card-meta">
+        ${ownerHtml}
+        ${dueHtml}
+        ${ageBadgeHtml}
+      </div>
+      ${sourceHtml}
+      <div class="card-actions">
+        ${doneBtn}
+        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();openEdit('${item.id}')">✎ Edit</button>
+        ${zoneMenu}
+        <button class="btn btn-sm btn-secondary" style="color:#ef4444" onclick="event.stopPropagation();confirmDeleteItem('${item.id}')">✕</button>
+      </div>
+    </div>`;
+}
+
+function renderAll() {
+  const items = getFilteredItems();
+  const zones = ['hot', 'approaching', 'parked', 'invest'];
+  zones.forEach(zone => {
+    const zoneItems = items.filter(i => i.zone === zone);
+    document.getElementById(`count-${zone}`).textContent = zoneItems.length;
+    const container = document.getElementById(`items-${zone}`);
+    if (zoneItems.length === 0) {
+      container.innerHTML = `<div class="empty-state" style="padding:20px">
+        <div style="font-size:22px;margin-bottom:8px">${ZONE_ICONS[zone]}</div>
+        <div style="font-size:12px;color:var(--text-muted)">Nothing here</div>
+      </div>`;
+    } else {
+      container.innerHTML = zoneItems.map(renderItemCard).join('');
+    }
+  });
+  updateDeleteDoneBtn();
+}
+
+function updateDeleteDoneBtn() {
+  const btn = document.getElementById('delete-done-btn');
+  if (!btn) return;
+  const doneCount = state.items.filter(i => i.status === 'done').length;
+  btn.style.display = doneCount > 0 ? '' : 'none';
+  btn.textContent = `🗑 Delete Done (${doneCount})`;
+}
+```
+
+- [ ] **Step 2: Replace the `renderAll` stub earlier in the file**
+
+Find `function renderAll() {}` (the stub added in Task 2) and delete just that stub line — the real `renderAll` is now defined above.
+
+- [ ] **Step 3: Add `parseDueDate` (needed by `getDueDateClass` — add it before the render section)**
+
+```javascript
+// ─────────────────────────────────────────────
+// Date Parsing
+// ─────────────────────────────────────────────
+function parseDueDate(str) {
+  if (!str) return null;
+  const s = str.toLowerCase().trim();
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+
+  if (s === 'today') return new Date(now);
+  if (s === 'tomorrow') {
+    const d = new Date(now); d.setDate(d.getDate() + 1); return d;
+  }
+  if (s.includes('end of month') || s === 'eom') {
+    return new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  }
+  if (s.includes('end of week') || s.includes('eow')) {
+    const d = new Date(now);
+    const toFriday = (5 - d.getDay() + 7) % 7 || 7;
+    d.setDate(d.getDate() + toFriday); return d;
+  }
+  if (s.includes('next week')) {
+    const d = new Date(now); d.setDate(d.getDate() + 7); return d;
+  }
+
+  const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  for (let i = 0; i < days.length; i++) {
+    if (s.includes(days[i])) {
+      const diff = (i - now.getDay() + 7) % 7 || 7;
+      const extra = s.includes('next') ? 7 : 0;
+      const d = new Date(now); d.setDate(d.getDate() + diff + extra); return d;
+    }
+  }
+
+  // Strip noise words and try native parsing
+  const cleaned = str.replace(/\b(eod|by|before|end of day|end of|@)\b/gi, '').trim();
+  const parsed = new Date(cleaned);
+  if (!isNaN(parsed.getTime())) {
+    // If parsed date is in the past and no explicit year, push to next year
+    if (parsed < now && !cleaned.match(/\d{4}/)) {
+      parsed.setFullYear(parsed.getFullYear() + 1);
+    }
+    return parsed;
+  }
+  return null;
+}
+```
+
+- [ ] **Step 4: Verify rendering**
+
+Temporarily add to the end of `DOMContentLoaded`:
+```javascript
+// TEMP: seed a fake item to test rendering
+state.items = [{
+  id: 'test1', category: 'my_commitment', zone: 'hot',
+  description: 'Test card — should show blue left border and red column',
+  owner: 'Greg', dueDate: 'Tomorrow', confidence: 'high',
+  status: 'open', zoneLocked: false,
+  lastActivityAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)
+}];
+renderAll();
+```
+
+Open in Chrome. Expected: One card appears in the Hot column with blue left border (my_commitment), "● High" in green, age badge "8d no activity", due date "Tomorrow" in amber.
+
+Remove the temp seed lines after verifying.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: render engine — 4-column board, item cards, age badges, due date coloring"
+```
+
+---
+
+## Task 4: Filter bar interactivity
+
+**Files:**
+- Modify: `commitment-radar.html` — add filter event listeners
+
+- [ ] **Step 1: Add filter listeners inside `DOMContentLoaded`**
+
+```javascript
+// Category filter chips
+document.querySelectorAll('[data-cat]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-cat]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.filterCat = btn.dataset.cat;
+    renderAll();
+  });
+});
+
+// Status filter chips
+document.querySelectorAll('[data-status]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-status]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.filterStatus = btn.dataset.status;
+    renderAll();
+  });
+});
+```
+
+- [ ] **Step 2: Verify filters work**
+
+Open in Chrome with a few seeded items across categories (use the temp seed approach from Task 3 Step 4 with items of different categories). Click "Risk" filter chip — only risk items should show. Click "Done" status chip — only done items show. Click "All" to reset.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: filter bar — category and status chip filtering"
+```
+
+---
+
+## Task 5: Settings modal
+
+**Files:**
+- Modify: `commitment-radar.html` — add settings modal HTML + JS
+
+- [ ] **Step 1: Replace the settings modal comment with actual HTML (after the edit modal comment)**
+
+```html
+<!-- ═══ SETTINGS MODAL ═══ -->
+<div class="overlay" id="settings-overlay">
+  <div class="modal" style="width:480px">
+    <div class="modal-header">
+      <span class="modal-title">Settings</span>
+      <button class="modal-close" id="settings-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Claude API Key</label>
+        <div class="key-input-wrap">
+          <input type="password" class="form-control" id="api-key-input"
+            placeholder="sk-ant-…" style="padding-right:40px">
+          <button class="key-toggle" id="key-toggle">👁</button>
+        </div>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          Stored only in this browser's localStorage. Get a key at
+          <strong>console.anthropic.com</strong> → API Keys.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Model</label>
+        <select class="form-control" id="model-select">
+          <option value="claude-opus-4-6">Claude Opus 4.6 — most capable (~$0.01–0.05/thread)</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — balanced (~$0.003–0.01/thread)</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fastest/cheapest (~$0.001–0.005/thread)</option>
+        </select>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          File imports always use Haiku regardless of selection (rate limit safety).
+          This setting applies to paste-tab extraction only.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Workspace Context</label>
+        <textarea class="form-control" id="workspace-context" rows="6"
+          placeholder="Describe your key projects, people, and roles. Claude uses this to make better judgments about ownership and priority.
+
+Example:
+I'm a project manager at a civil engineering firm working on TxDOT projects in Houston.
+Key projects: D3895600 (traffic study, high risk), WHXK4712 (environmental, tight schedule).
+Key people: Marcus = PM on D3895600, Jordan = junior engineer I'm mentoring.
+Sarah = TxDOT district contact (important client relationship).
+
+Keep under ~500 words."></textarea>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
+          Injected into every Claude call. Helps Claude identify ownership, priority, and Invest candidates.
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="settings-cancel">Cancel</button>
+      <button class="btn btn-primary" id="settings-save">Save Settings</button>
+    </div>
+  </div>
+</div>
+```
+
+- [ ] **Step 2: Add settings JS (add after `updateDeleteDoneBtn`)**
+
+```javascript
+// ─────────────────────────────────────────────
+// Settings Modal
+// ─────────────────────────────────────────────
+function openSettings() {
+  document.getElementById('api-key-input').value = state.apiKey;
+  document.getElementById('model-select').value = state.model;
+  document.getElementById('workspace-context').value = state.workspaceContext;
+  document.getElementById('settings-overlay').classList.add('open');
+}
+
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('open');
+}
+```
+
+- [ ] **Step 3: Add settings event listeners inside `DOMContentLoaded`**
+
+```javascript
+document.getElementById('settings-btn').addEventListener('click', openSettings);
+document.getElementById('settings-close').addEventListener('click', closeSettings);
+document.getElementById('settings-cancel').addEventListener('click', closeSettings);
+document.getElementById('settings-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('settings-overlay')) closeSettings();
+});
+
+document.getElementById('key-toggle').addEventListener('click', () => {
+  const inp = document.getElementById('api-key-input');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+});
+
+document.getElementById('settings-save').addEventListener('click', () => {
+  state.apiKey = document.getElementById('api-key-input').value.trim();
+  state.model = document.getElementById('model-select').value;
+  state.workspaceContext = document.getElementById('workspace-context').value;
+  localStorage.setItem('radar_api_key', state.apiKey);
+  localStorage.setItem('radar_model', state.model);
+  localStorage.setItem('radar_workspace_context', state.workspaceContext);
+  closeSettings();
+  showToast('Settings saved', 'success');
+});
+```
+
+- [ ] **Step 4: Verify settings modal**
+
+Open in Chrome. Click ⚙ Settings. Expected: Modal opens with API key field, model dropdown (3 options), workspace context textarea. Type a fake key, click Save — console.log `state.apiKey` in DevTools to confirm it saved. Reopen settings — key should still be there.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: settings modal — API key, model selector, workspace context"
+```
+
+---
+
+## Task 6: System prompt
+
+**Files:**
+- Modify: `commitment-radar.html` — add `SYSTEM_PROMPT` and `buildSystemPrompt()` constants
+
+- [ ] **Step 1: Add the system prompt (add after settings JS, before import modal JS)**
+
+```javascript
+// ─────────────────────────────────────────────
+// System Prompt
+// ─────────────────────────────────────────────
+const BASE_SYSTEM_PROMPT = `You are an expert at extracting commitments, obligations, and important follow-ups from email threads and meeting notes.
+
+Analyze the provided text and extract ALL items into exactly these six categories:
+- "my_commitment": something the user (first person "I") explicitly committed to, or was directly assigned to them
+- "their_commitment": something another named person committed to or said they would do
+- "waiting": the user is blocked pending someone else's action, response, or decision
+- "risk": an unaddressed threat to schedule, scope, budget, or a key relationship that needs attention
+- "decision": a choice, approval, or go/no-go that needs to be made before work can proceed
+- "followup": a conversation, check-in, relationship touch, or non-urgent action that should happen
+
+For each item extract:
+- category: one of the six above
+- description: clear, concise description (1–2 sentences, written as a standalone item)
+- owner: the person responsible (first name or full name if mentioned, null if unclear)
+- dueDate: due date if mentioned (natural language: "Friday", "EOD March 31", etc., null if none)
+- followUpDate: a suggested re-engagement date if different from dueDate (null if none)
+- sourceSnippet: the exact quote or near-quote that led to this item (max 150 chars)
+- confidence: "high" if explicit and specific, "medium" if implied or soft, "low" if vague or speculative
+- investSuggested: true if this item has no urgency but clear long-term value — mentoring opportunities, relationship investments, learning moments, visibility opportunities, strategic follow-ups with no deadline. Otherwise false.
+- outlookCategory: if the email block is preceded by [OUTLOOK_CATEGORY: xxx], use that value; otherwise null
+- flagged: true if the email block is preceded by [OUTLOOK_FLAGGED], otherwise false
+
+Be thorough — capture everything actionable, risky, or worth tracking. Do not miss items.
+
+Return ONLY valid JSON, no prose, no markdown fences. Format:
+{
+  "suggestedTitle": "5–8 word descriptive title for this thread",
+  "items": [
+    {
+      "category": "my_commitment",
+      "description": "...",
+      "owner": "...",
+      "dueDate": null,
+      "followUpDate": null,
+      "sourceSnippet": "...",
+      "confidence": "high",
+      "investSuggested": false,
+      "outlookCategory": null,
+      "flagged": false
+    }
+  ]
+}`;
+
+function buildSystemPrompt() {
+  const ctx = state.workspaceContext.trim();
+  if (!ctx) return BASE_SYSTEM_PROMPT;
+  return `--- YOUR WORKSPACE CONTEXT ---\n${ctx}\n--- END CONTEXT ---\n\n${BASE_SYSTEM_PROMPT}`;
+}
+```
+
+- [ ] **Step 2: Verify (no browser step needed — logic only)**
+
+In DevTools console, call `buildSystemPrompt()`. Expected: With empty workspace context, returns `BASE_SYSTEM_PROMPT`. After saving a workspace context string in Settings, should prepend the context block.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: system prompt with 6 categories, confidence scoring, invest flagging, and workspace context injection"
+```
+
+---
+
+## Task 7: Web Worker (chunked file extraction)
+
+**Files:**
+- Modify: `commitment-radar.html` — add the Web Worker script block
+
+- [ ] **Step 1: Add the Web Worker script block before the main `<script>` tag**
+
+This is transplanted from ClearThread lines 713–915 with one change: the `SYSTEM_PROMPT` is received from `e.data.systemPrompt` instead of being defined in the worker (since workers can't access `localStorage` for workspace context).
+
+```html
+<!-- ═══ EXTRACTION WORKER ═══ -->
+<script id="extraction-worker" type="javascript/worker">
+const CHUNK_SIZE = 50000;
+const RATE_WINDOW_MS = 65000;
+
+// Transplanted verbatim from ClearThread index.html lines 718–729
+function stripSignature(text) {
+  let idx = text.search(/^--\s*$/m);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  idx = text.search(/^[_\-]{4,}\s*$/m);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  idx = text.search(/^(thanks|thank you|regards|best regards|kind regards|warm regards|best|sincerely|cheers|cordially)[,.]?\s*$/im);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  return text;
+}
+
+// Transplanted verbatim from ClearThread index.html lines 731–772
+function preprocessEmails(text) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return { text, emailsRemoved: 0 };
+
+  const blocks = [];
+  if (emailStarts[0] > 0) blocks.push({ key: null, text: text.slice(0, emailStarts[0]) });
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    const block = text.slice(start, end);
+    const fromMatch = block.match(/^From:\s*(.+)$/im);
+    const sentMatch = block.match(/^Sent:\s*(.+)$/im);
+    const key = fromMatch && sentMatch ? (fromMatch[1].trim() + '|' + sentMatch[1].trim()) : null;
+    const catMatch = block.match(/^Categories:\s*(.+)$/im);
+    const flagged = /^Flag Status:\s*Flagged/im.test(block);
+    blocks.push({ key, text: stripSignature(block), outlookCategory: catMatch ? catMatch[1].trim() : null, flagged });
+  });
+
+  const seen = new Set();
+  let emailsRemoved = 0;
+  const deduped = blocks.filter(b => {
+    if (!b.key) return true;
+    if (seen.has(b.key)) { emailsRemoved++; return false; }
+    seen.add(b.key);
+    return true;
+  });
+
+  const annotated = deduped.map(b => {
+    if (!b.key) return b.text;
+    const parts = [];
+    if (b.outlookCategory) parts.push(`OUTLOOK_CATEGORY: ${b.outlookCategory}`);
+    if (b.flagged) parts.push('OUTLOOK_FLAGGED');
+    return parts.length ? `[${parts.join(', ')}]\n` + b.text : b.text;
+  }).join('');
+
+  return { text: annotated, emailsRemoved };
+}
+
+// Transplanted verbatim from ClearThread index.html lines 774–804
+function splitIntoChunks(text, maxChars) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return [text.slice(0, maxChars)];
+  const emails = [];
+  if (emailStarts[0] > 0) emails.push(text.slice(0, emailStarts[0]));
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    emails.push(text.slice(start, end));
+  });
+  const chunks = [];
+  let current = '';
+  for (const email of emails) {
+    if (email.length > maxChars) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(email.slice(0, maxChars));
+    } else if (current.length + email.length > maxChars) {
+      chunks.push(current); current = email;
+    } else {
+      current += email;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Transplanted verbatim from ClearThread index.html lines 810–822
+function sanitizeJson(str) {
+  let out = '', inStr = false, esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (esc)            { out += ch; esc = false; continue; }
+    if (ch === '\\' && inStr) { out += ch; esc = true;  continue; }
+    if (ch === '"')     { inStr = !inStr; out += ch; continue; }
+    if (inStr && ch === '\n') { out += '\\n'; continue; }
+    if (inStr && ch === '\r') { out += '\\r'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+async function waitWithCountdown(seconds, label) {
+  for (let s = seconds; s > 0; s--) {
+    self.postMessage({ type: 'tick', secondsLeft: s, label });
+    await sleep(1000);
+  }
+}
+
+async function extractChunk(chunkText, apiKey, systemPrompt) {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 8192,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: chunkText }],
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const msg = err?.error?.message || `API error ${resp.status}`;
+    const error = new Error(msg);
+    if (resp.status === 429) error.isRateLimit = true;
+    throw error;
+  }
+  const data = await resp.json();
+  if (data.stop_reason === 'max_tokens') {
+    throw new Error('Response truncated — chunk too large. Try a smaller file.');
+  }
+  const raw = data.content?.[0]?.text || '';
+  let jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const firstBrace = jsonStr.indexOf('{');
+  const lastBrace = jsonStr.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  jsonStr = sanitizeJson(jsonStr);
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); }
+  catch { throw new Error(`JSON parse failed. Response start: "${raw.slice(0, 80)}" / end: "${raw.slice(-80)}"`); }
+  return parsed;
+}
+
+self.onmessage = async function(e) {
+  const { apiKey, text, systemPrompt } = e.data;
+  const { text: processedText, emailsRemoved } = preprocessEmails(text);
+  const chunks = splitIntoChunks(processedText, CHUNK_SIZE);
+  let allItems = [];
+  let suggestedTitle = '';
+
+  for (let i = 0; i < chunks.length; i++) {
+    self.postMessage({ type: 'progress', current: i + 1, total: chunks.length });
+    const chunkStart = Date.now();
+
+    let result;
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      try {
+        result = await extractChunk(chunks[i], apiKey, systemPrompt);
+        break;
+      } catch (err) {
+        const isRetryable = err.isRateLimit || err.message === 'Failed to fetch' || err instanceof TypeError;
+        if (isRetryable && attempt < 3) {
+          const label = err.isRateLimit
+            ? `Rate limit — retrying chunk ${i + 1}`
+            : `Network error — retrying chunk ${i + 1}`;
+          await waitWithCountdown(30, label);
+        } else {
+          self.postMessage({ type: 'error', message: err.message || 'Extraction failed' });
+          return;
+        }
+      }
+    }
+
+    if (!suggestedTitle && result.suggestedTitle) suggestedTitle = result.suggestedTitle;
+    allItems = allItems.concat(result.items || []);
+
+    if (i < chunks.length - 1) {
+      const elapsed = Date.now() - chunkStart;
+      const remaining = Math.ceil(Math.max(0, RATE_WINDOW_MS - elapsed) / 1000);
+      if (remaining > 0) {
+        await waitWithCountdown(remaining, `Chunk ${i + 1} of ${chunks.length} complete`);
+      }
+    }
+  }
+
+  self.postMessage({ type: 'done', suggestedTitle, items: allItems, chunkCount: chunks.length, emailsRemoved });
+};
+</script>
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: Web Worker for chunked file extraction — transplanted and updated from ClearThread"
+```
+
+---
+
+## Task 8: Import modal + extraction flow
+
+**Files:**
+- Modify: `commitment-radar.html` — add import modal HTML and JS
+
+- [ ] **Step 1: Replace the import modal comment with actual HTML**
+
+```html
+<!-- ═══ IMPORT MODAL ═══ -->
+<div class="overlay" id="import-overlay">
+  <div class="modal" style="width:600px;max-height:85vh">
+    <div class="modal-header">
+      <span class="modal-title">Import Thread</span>
+      <button class="modal-close" id="import-close">✕</button>
+    </div>
+
+    <!-- Input step -->
+    <div id="import-input-view">
+      <div class="modal-body">
+        <div class="tab-bar">
+          <button class="tab-btn active" id="tab-paste">Paste Text</button>
+          <button class="tab-btn" id="tab-file">Upload File</button>
+        </div>
+
+        <!-- Paste tab -->
+        <div id="paste-tab">
+          <div class="form-group">
+            <label class="form-label">Paste email thread or meeting notes</label>
+            <textarea class="form-control" id="paste-input" rows="10"
+              placeholder="Paste the content of an email thread, meeting notes, or any text containing commitments and action items…"></textarea>
+          </div>
+        </div>
+
+        <!-- File tab -->
+        <div id="file-tab" style="display:none">
+          <div id="drop-zone" style="border:2px dashed var(--border);border-radius:var(--radius);padding:32px;text-align:center;cursor:pointer;transition:border-color 0.15s">
+            <div style="font-size:32px;margin-bottom:8px">📎</div>
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px">Drop a .txt file here</div>
+            <div style="font-size:12px;color:var(--text-muted)">or <span style="color:#2563eb;cursor:pointer" id="browse-link">browse</span> to select</div>
+            <input type="file" id="file-input" accept=".txt" style="display:none">
+          </div>
+          <div class="file-info-panel" id="file-info-panel">
+            <div class="file-info-row"><strong id="file-char-count">—</strong> characters</div>
+            <div class="file-info-row" id="file-dupe-row" style="display:none"><strong id="file-dupe-count">0</strong> duplicate emails removed</div>
+            <div class="file-info-row"><strong id="file-chunk-count">—</strong> chunks to process</div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+              <div class="file-info-row"><strong>Last email from:</strong> <span id="file-last-from">—</span></div>
+              <div class="file-info-row"><strong>Sent:</strong> <span id="file-last-sent">—</span></div>
+              <div class="file-info-row"><strong>Subject:</strong> <span id="file-last-subject">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="import-cancel">Cancel</button>
+        <button class="btn btn-primary" id="import-extract-btn">Extract with Claude</button>
+      </div>
+    </div>
+
+    <!-- Extracting step -->
+    <div id="import-extracting-view" style="display:none">
+      <div class="modal-body">
+        <div class="extracting-view active">
+          <div class="spinner"></div>
+          <div class="progress-label" id="progress-label">Extracting…</div>
+          <div style="font-size:12px;color:var(--text-muted)" id="progress-sublabel"></div>
+          <button class="btn btn-secondary btn-sm" id="cancel-extract-btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preview step -->
+    <div id="import-preview-view" style="display:none">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Thread Name</label>
+          <input type="text" class="form-control" id="preview-thread-name">
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <span style="font-size:13px;font-weight:600">Extracted Items</span>
+          <span id="preview-count" style="font-size:12px;color:var(--text-muted)">0 items</span>
+        </div>
+        <div id="preview-dupe-notice" style="display:none;margin-bottom:10px;padding:8px 12px;background:#fff7ed;border:1px solid #fdba74;border-radius:var(--radius);font-size:12px;color:#c2410c"></div>
+        <div id="preview-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="preview-back-btn">← Back</button>
+        <button class="btn btn-primary" id="preview-save-btn">Save to Radar</button>
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+- [ ] **Step 2: Add `sanitizeJson` and `extractFromText` to the main `<script>`**
+
+Add these after `buildSystemPrompt`:
+
+```javascript
+// ─────────────────────────────────────────────
+// Claude API — Main Thread (paste tab)
+// ─────────────────────────────────────────────
+// Transplanted verbatim from ClearThread index.html lines 1002–1014
+function sanitizeJson(str) {
+  let out = '', inStr = false, esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (esc)            { out += ch; esc = false; continue; }
+    if (ch === '\\' && inStr) { out += ch; esc = true;  continue; }
+    if (ch === '"')     { inStr = !inStr; out += ch; continue; }
+    if (inStr && ch === '\n') { out += '\\n'; continue; }
+    if (inStr && ch === '\r') { out += '\\r'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+async function extractFromText(text) {
+  if (!state.apiKey) throw new Error('No API key. Please add your Claude API key in Settings.');
+  const CHAR_LIMIT = 380000;
+  if (text.length > CHAR_LIMIT) text = text.slice(0, CHAR_LIMIT);
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': state.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: state.model,
+      max_tokens: 4096,
+      system: buildSystemPrompt(),
+      messages: [{ role: 'user', content: text }],
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const msg = err?.error?.message || `API error ${resp.status}`;
+    throw new Error(msg);
+  }
+
+  const data = await resp.json();
+  const raw = data.content?.[0]?.text || '';
+  let jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const firstBrace = jsonStr.indexOf('{');
+  const lastBrace = jsonStr.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  jsonStr = sanitizeJson(jsonStr);
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); }
+  catch { throw new Error(`Claude returned unexpected output: "${raw.slice(0, 120)}…"`); }
+  return parsed;
+}
+```
+
+- [ ] **Step 3: Add import modal JS**
+
+Add after `extractFromText`:
+
+```javascript
+// ─────────────────────────────────────────────
+// Import Modal
+// ─────────────────────────────────────────────
+function openImport() {
+  resetImport();
+  document.getElementById('import-overlay').classList.add('open');
+}
+
+function closeImport() {
+  if (state.worker) { state.worker.terminate(); state.worker = null; }
+  document.getElementById('import-overlay').classList.remove('open');
+}
+
+function resetImport() {
+  state.importStep = 'input';
+  state.importTab = 'paste';
+  state.fileContent = null;
+  state.previewItems = [];
+  state.previewDupeCount = 0;
+  state.previewInvestToggles = {};
+  state.extractedThreadName = '';
+  if (state.worker) { state.worker.terminate(); state.worker = null; }
+  document.getElementById('paste-input').value = '';
+  document.getElementById('preview-thread-name').value = '';
+  document.getElementById('preview-list').innerHTML = '';
+  document.getElementById('file-info-panel').classList.remove('visible');
+  const fi = document.getElementById('file-input');
+  if (fi) fi.value = '';
+  setImportView('input');
+  setImportTab('paste');
+}
+
+function setImportView(view) {
+  document.getElementById('import-input-view').style.display    = view === 'input'      ? '' : 'none';
+  document.getElementById('import-extracting-view').style.display = view === 'extracting' ? '' : 'none';
+  document.getElementById('import-preview-view').style.display  = view === 'preview'    ? '' : 'none';
+  state.importStep = view;
+}
+
+function setImportTab(tab) {
+  state.importTab = tab;
+  document.getElementById('paste-tab').style.display = tab === 'paste' ? '' : 'none';
+  document.getElementById('file-tab').style.display  = tab === 'file'  ? '' : 'none';
+  document.getElementById('tab-paste').classList.toggle('active', tab === 'paste');
+  document.getElementById('tab-file').classList.toggle('active', tab === 'file');
+}
+
+// ─────────────────────────────────────────────
+// File info panel helpers (transplanted from ClearThread)
+// ─────────────────────────────────────────────
+function splitIntoChunks(text, maxChars = 380000) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return [text.slice(0, maxChars)];
+  const emails = [];
+  if (emailStarts[0] > 0) emails.push(text.slice(0, emailStarts[0]));
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    emails.push(text.slice(start, end));
+  });
+  const chunks = [];
+  let current = '';
+  for (const email of emails) {
+    if (email.length > maxChars) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(email.slice(0, maxChars));
+    } else if (current.length + email.length > maxChars) {
+      chunks.push(current); current = email;
+    } else {
+      current += email;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function showFileInfo(rawText) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(rawText)) !== null) {
+    const ahead = rawText.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  const chunks = splitIntoChunks(rawText, 50000);
+  document.getElementById('file-char-count').textContent  = rawText.length.toLocaleString();
+  document.getElementById('file-chunk-count').textContent = chunks.length;
+
+  // Last email metadata
+  if (emailStarts.length > 0) {
+    const lastStart = emailStarts[emailStarts.length - 1];
+    const block = rawText.slice(lastStart, lastStart + 600);
+    const from    = (block.match(/^From:\s*(.+)$/im) || [])[1] || '—';
+    const sent    = (block.match(/^Sent:\s*(.+)$/im) || [])[1] || '—';
+    const subject = (block.match(/^Subject:\s*(.+)$/im) || [])[1] || '—';
+    document.getElementById('file-last-from').textContent    = from.trim();
+    document.getElementById('file-last-sent').textContent    = sent.trim();
+    document.getElementById('file-last-subject').textContent = subject.trim();
+  }
+
+  document.getElementById('file-info-panel').classList.add('visible');
+}
+
+// ─────────────────────────────────────────────
+// Deduplication (transplanted from ClearThread)
+// ─────────────────────────────────────────────
+const DUPE_THRESHOLD = 0.72;
+const STOP_WORDS = new Set(['a','an','the','is','it','in','on','at','to','for','of','and','or','with','that','this','was','has','have','be','are']);
+
+function normalizeWords(str) {
+  return str.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w));
+}
+
+function wordSimilarity(a, b) {
+  const wa = new Set(normalizeWords(a));
+  const wb = new Set(normalizeWords(b));
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let intersection = 0;
+  wa.forEach(w => { if (wb.has(w)) intersection++; });
+  return intersection / Math.min(wa.size, wb.size);
+}
+
+function findDuplicates(newItems) {
+  const dupeIndices = new Set();
+  newItems.forEach((item, i) => {
+    // Check against existing items
+    for (const existing of state.items) {
+      if (wordSimilarity(item.description, existing.description) >= DUPE_THRESHOLD) {
+        dupeIndices.add(i); break;
+      }
+    }
+    // Check against earlier items in same batch
+    if (!dupeIndices.has(i)) {
+      for (let j = 0; j < i; j++) {
+        if (!dupeIndices.has(j) && wordSimilarity(item.description, newItems[j].description) >= DUPE_THRESHOLD) {
+          dupeIndices.add(i); break;
+        }
+      }
+    }
+  });
+  return dupeIndices;
+}
+
+// ─────────────────────────────────────────────
+// Zone assignment at import time
+// ─────────────────────────────────────────────
+function assignZone(item, investAccepted) {
+  if (investAccepted) return 'invest';
+  const parsed = parseDueDate(item.dueDate);
+  if (!parsed) return 'parked';
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const days = Math.round((parsed - now) / (1000 * 60 * 60 * 24));
+  if (days <= 7)  return 'hot';
+  if (days <= 30) return 'approaching';
+  return 'parked';
+}
+
+// ─────────────────────────────────────────────
+// Preview rendering
+// ─────────────────────────────────────────────
+function renderPreview(items) {
+  state.previewItems = items;
+  // Preserve existing toggle choices — only initialize keys that don't exist yet.
+  // This prevents re-renders (from toggle clicks and item removals) from resetting user choices.
+  items.forEach((item, i) => {
+    if (!(i in state.previewInvestToggles)) {
+      state.previewInvestToggles[i] = !!item.investSuggested;
+    }
+  });
+  // Remove stale keys beyond current array length
+  Object.keys(state.previewInvestToggles).forEach(k => {
+    if (parseInt(k) >= items.length) delete state.previewInvestToggles[k];
+  });
+
+  const dupeIndices = findDuplicates(items);
+  state.previewDupeCount = dupeIndices.size;
+
+  const visibleItems = items.filter((_, i) => !dupeIndices.has(i));
+
+  const total = visibleItems.length;
+  const dupeNote = state.previewDupeCount > 0
+    ? ` · ${state.previewDupeCount} duplicate${state.previewDupeCount !== 1 ? 's' : ''} removed`
+    : '';
+  document.getElementById('preview-count').textContent = `${total} item${total !== 1 ? 's' : ''}${dupeNote}`;
+
+  if (state.previewDupeCount > 0) {
+    const notice = document.getElementById('preview-dupe-notice');
+    notice.textContent = `⚠ ${state.previewDupeCount} item${state.previewDupeCount !== 1 ? 's were' : ' was'} skipped as possible duplicate${state.previewDupeCount !== 1 ? 's' : ''} of items already in your dashboard.`;
+    notice.style.display = '';
+  }
+
+  // Store original indices for non-dupes so we know which previewInvestToggles key to use
+  const visibleWithIndex = items
+    .map((item, origIndex) => ({ item, origIndex }))
+    .filter(({ origIndex }) => !dupeIndices.has(origIndex));
+
+  document.getElementById('preview-list').innerHTML = visibleWithIndex.map(({ item, origIndex }) => {
+    const zone = assignZone(item, state.previewInvestToggles[origIndex]);
+    const zoneIcon = ZONE_ICONS[zone] || '';
+    const investOn = state.previewInvestToggles[origIndex];
+    const investHtml = item.investSuggested
+      ? `<span class="invest-toggle ${investOn ? '' : 'off'}" data-idx="${origIndex}">${investOn ? '🟣 Invest' : 'Invest?'}</span>`
+      : '';
+    const confidenceLabel = { high: '● High', medium: '● Med', low: '● Low' }[item.confidence] || '';
+    const sourceHtml = item.sourceSnippet
+      ? `<span class="source-toggle" onclick="this.nextElementSibling.classList.toggle('open')">▸ source</span>
+         <div class="source-snippet">${escHtml(item.sourceSnippet)}</div>`
+      : '';
+    return `
+      <div class="preview-item" data-orig="${origIndex}">
+        <button class="preview-item-remove" title="Remove" onclick="removePreviewItem(${origIndex})">✕</button>
+        <div class="preview-item-body">
+          <div class="preview-item-badges">
+            <span class="cat-badge cat-${item.category}">${CAT_LABELS[item.category] || item.category}</span>
+            <span class="zone-badge zone-${zone}">${zoneIcon} ${zone}</span>
+            <span class="confidence-dot ${item.confidence || 'low'}" style="font-size:11px">${escHtml(confidenceLabel)}</span>
+            ${investHtml}
+            ${item.owner ? `<span style="font-size:11px;color:var(--text-muted)">👤 ${escHtml(item.owner)}</span>` : ''}
+            ${item.dueDate ? `<span style="font-size:11px;color:var(--text-muted)">📅 ${escHtml(item.dueDate)}</span>` : ''}
+          </div>
+          <div class="preview-item-desc">${escHtml(item.description)}</div>
+          ${sourceHtml}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Invest toggle event listeners
+  document.querySelectorAll('.invest-toggle').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.dataset.idx);
+      state.previewInvestToggles[idx] = !state.previewInvestToggles[idx];
+      renderPreview(state.previewItems);
+    });
+  });
+}
+
+function removePreviewItem(origIndex) {
+  // Save current toggle state keyed by description (survives re-indexing after splice)
+  const savedByDesc = {};
+  state.previewItems.forEach((item, i) => {
+    savedByDesc[item.description] = state.previewInvestToggles[i] ?? !!item.investSuggested;
+  });
+  state.previewItems.splice(origIndex, 1);
+  // Rebuild toggle map for new indices
+  state.previewInvestToggles = {};
+  state.previewItems.forEach((item, i) => {
+    state.previewInvestToggles[i] = savedByDesc[item.description] ?? !!item.investSuggested;
+  });
+  renderPreview(state.previewItems);
+}
+
+// ─────────────────────────────────────────────
+// Save preview items to Firestore
+// ─────────────────────────────────────────────
+async function savePreviewItems() {
+  const threadId = Date.now().toString();
+  const threadTitle = document.getElementById('preview-thread-name').value.trim() || 'Untitled Thread';
+
+  const dupeIndices = findDuplicates(state.previewItems);
+  const itemsToSave = state.previewItems
+    .map((item, origIndex) => ({ item, origIndex }))
+    .filter(({ origIndex }) => !dupeIndices.has(origIndex))
+    .map(({ item, origIndex }) => {
+      const investAccepted = state.previewInvestToggles[origIndex];
+      const zone = assignZone(item, investAccepted);
+      return {
+        category:        item.category || 'followup',
+        description:     item.description || '',
+        owner:           item.owner || null,
+        dueDate:         item.dueDate || null,
+        followUpDate:    item.followUpDate || null,
+        sourceSnippet:   item.sourceSnippet || '',
+        confidence:      item.confidence || 'medium',
+        investSuggested: !!item.investSuggested,
+        outlookCategory: item.outlookCategory || null,
+        flagged:         !!item.flagged,
+        zone,
+        zoneLocked:      false,
+        roleTag:         null,
+        notes:           '',
+      };
+    });
+
+  if (itemsToSave.length === 0) {
+    showToast('No items to save', 'error');
+    return;
+  }
+
+  try {
+    document.getElementById('preview-save-btn').disabled = true;
+    document.getElementById('preview-save-btn').textContent = 'Saving…';
+    await saveItemsBatch(itemsToSave, threadId, threadTitle);
+    closeImport();
+    showToast(`${itemsToSave.length} items saved to radar`, 'success');
+  } catch (e) {
+    console.error(e);
+    showToast('Save failed: ' + e.message, 'error');
+  } finally {
+    document.getElementById('preview-save-btn').disabled = false;
+    document.getElementById('preview-save-btn').textContent = 'Save to Radar';
+  }
+}
+
+// ─────────────────────────────────────────────
+// Extraction — paste tab
+// ─────────────────────────────────────────────
+async function doExtractionPaste() {
+  const text = document.getElementById('paste-input').value.trim();
+  if (!text) { showToast('Please paste some text first', 'error'); return; }
+  if (!state.apiKey) { showToast('Please add your API key in Settings', 'error'); openSettings(); return; }
+
+  setImportView('extracting');
+  document.getElementById('progress-label').textContent = 'Extracting with Claude…';
+  document.getElementById('progress-sublabel').textContent = '';
+
+  try {
+    const result = await extractFromText(text);
+    state.extractedThreadName = result.suggestedTitle || '';
+    document.getElementById('preview-thread-name').value = state.extractedThreadName;
+    document.getElementById('preview-dupe-notice').style.display = 'none';
+    renderPreview(result.items || []);
+    setImportView('preview');
+  } catch (e) {
+    console.error(e);
+    showToast('Extraction failed: ' + e.message, 'error');
+    setImportView('input');
+  }
+}
+
+// ─────────────────────────────────────────────
+// Extraction — file tab (Web Worker)
+// ─────────────────────────────────────────────
+function doExtractionFile() {
+  if (!state.fileContent) { showToast('Please select a file first', 'error'); return; }
+  if (!state.apiKey) { showToast('Please add your API key in Settings', 'error'); openSettings(); return; }
+
+  setImportView('extracting');
+  document.getElementById('progress-label').textContent = 'Processing file…';
+  document.getElementById('progress-sublabel').textContent = '';
+
+  const workerScript = document.getElementById('extraction-worker').textContent;
+  const blob = new Blob([workerScript], { type: 'application/javascript' });
+  state.worker = new Worker(URL.createObjectURL(blob));
+
+  state.worker.onmessage = function(e) {
+    const msg = e.data;
+    if (msg.type === 'progress') {
+      document.getElementById('progress-label').textContent = `Processing chunk ${msg.current} of ${msg.total}…`;
+    } else if (msg.type === 'tick') {
+      document.getElementById('progress-sublabel').textContent = `${msg.label} (${msg.secondsLeft}s)`;
+    } else if (msg.type === 'done') {
+      state.worker = null;
+      state.extractedThreadName = msg.suggestedTitle || '';
+      document.getElementById('preview-thread-name').value = state.extractedThreadName;
+      document.getElementById('preview-dupe-notice').style.display = 'none';
+      renderPreview(msg.items || []);
+      setImportView('preview');
+      if (msg.emailsRemoved > 0) {
+        showToast(`${msg.chunkCount} chunk${msg.chunkCount !== 1 ? 's' : ''} processed · ${msg.emailsRemoved} duplicate email${msg.emailsRemoved !== 1 ? 's' : ''} removed`);
+      }
+    } else if (msg.type === 'error') {
+      state.worker = null;
+      showToast('Extraction failed: ' + msg.message, 'error');
+      setImportView('input');
+    }
+  };
+
+  state.worker.postMessage({
+    apiKey: state.apiKey,
+    text: state.fileContent,
+    systemPrompt: buildSystemPrompt(),
+  });
+}
+```
+
+- [ ] **Step 4: Wire up import event listeners inside `DOMContentLoaded`**
+
+```javascript
+// Import modal open/close
+document.getElementById('import-btn').addEventListener('click', openImport);
+document.getElementById('import-close').addEventListener('click', closeImport);
+document.getElementById('import-cancel').addEventListener('click', closeImport);
+document.getElementById('import-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('import-overlay')) closeImport();
+});
+
+// Tab switching
+document.getElementById('tab-paste').addEventListener('click', () => setImportTab('paste'));
+document.getElementById('tab-file').addEventListener('click',  () => setImportTab('file'));
+
+// Extract button
+document.getElementById('import-extract-btn').addEventListener('click', () => {
+  if (state.importTab === 'paste') doExtractionPaste();
+  else doExtractionFile();
+});
+
+// Cancel extraction
+document.getElementById('cancel-extract-btn').addEventListener('click', () => {
+  if (state.worker) { state.worker.terminate(); state.worker = null; }
+  setImportView('input');
+});
+
+// Preview buttons
+document.getElementById('preview-back-btn').addEventListener('click', () => setImportView('input'));
+document.getElementById('preview-save-btn').addEventListener('click', savePreviewItems);
+
+// File upload
+document.getElementById('browse-link').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+document.getElementById('file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    state.fileContent = ev.target.result;
+    showFileInfo(state.fileContent);
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#2563eb'; });
+dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = ''; });
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.style.borderColor = '';
+  const file = e.dataTransfer.files[0];
+  if (!file || !file.name.endsWith('.txt')) { showToast('Please drop a .txt file', 'error'); return; }
+  const reader = new FileReader();
+  reader.onload = ev => { state.fileContent = ev.target.result; showFileInfo(state.fileContent); };
+  reader.readAsText(file);
+});
+```
+
+- [ ] **Step 5: Verify import flow with paste tab**
+
+Open in Chrome. Click "+ Import Thread". Expected: Modal opens with Paste Text / Upload File tabs. Paste a short piece of text (e.g., "I will send the draft by Friday. Sarah needs to confirm the wetland assumptions."). Click "Extract with Claude". Expected: Spinner shows, then preview screen with items, zone chips, and category badges. Click "Save to Radar" — items appear on the dashboard.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: import modal — paste + file tabs, Web Worker, preview with zone chips and invest toggles, save to Firestore"
+```
+
+---
+
+## Task 9: Edit modal + card actions
+
+**Files:**
+- Modify: `commitment-radar.html` — add edit modal HTML and card action handlers
+
+- [ ] **Step 1: Replace the edit modal comment with actual HTML**
+
+```html
+<!-- ═══ EDIT MODAL ═══ -->
+<div class="overlay" id="edit-overlay">
+  <div class="modal" style="width:520px">
+    <div class="modal-header">
+      <span class="modal-title">Edit Item</span>
+      <button class="modal-close" id="edit-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="edit-id">
+      <div class="form-group">
+        <label class="form-label">Category</label>
+        <select class="form-control" id="edit-category">
+          <option value="my_commitment">My Commitment</option>
+          <option value="their_commitment">Their Commitment</option>
+          <option value="waiting">Waiting On</option>
+          <option value="risk">Risk</option>
+          <option value="decision">Decision Needed</option>
+          <option value="followup">Follow-up</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea class="form-control" id="edit-description" style="min-height:90px"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Owner</label>
+          <input type="text" class="form-control" id="edit-owner" placeholder="e.g. Sarah, Marcus">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Due Date</label>
+          <input type="text" class="form-control" id="edit-due" placeholder="e.g. Friday, March 31">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Follow-up Date</label>
+          <input type="text" class="form-control" id="edit-followup" placeholder="e.g. Check in Thursday">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-control" id="edit-status">
+            <option value="open">Open</option>
+            <option value="done">Done</option>
+            <option value="snoozed">Snoozed</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Zone</label>
+          <select class="form-control" id="edit-zone">
+            <option value="hot">🔴 Hot</option>
+            <option value="approaching">🟡 Approaching</option>
+            <option value="parked">🔵 Parked</option>
+            <option value="invest">🟣 Invest</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Lock Zone?</label>
+          <select class="form-control" id="edit-zone-locked">
+            <option value="false">No — let aging engine move it</option>
+            <option value="true">Yes — keep it here</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Role Tag <span style="font-weight:400;text-transform:none;letter-spacing:0">(for future role lens feature)</span></label>
+        <select class="form-control" id="edit-role-tag">
+          <option value="">None</option>
+          <option value="pm">PM</option>
+          <option value="mop">MOP</option>
+          <option value="csl">CSL</option>
+          <option value="personal">Personal</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes</label>
+        <textarea class="form-control" id="edit-notes" style="min-height:70px"
+          placeholder="Any additional context…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="edit-cancel">Cancel</button>
+      <button class="btn btn-primary" id="edit-save">Save Changes</button>
+    </div>
+  </div>
+</div>
+```
+
+- [ ] **Step 2: Add edit modal JS and card action handlers**
+
+Add after `savePreviewItems`:
+
+```javascript
+// ─────────────────────────────────────────────
+// Edit Modal
+// ─────────────────────────────────────────────
+function openEdit(id) {
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+  document.getElementById('edit-id').value           = id;
+  document.getElementById('edit-category').value     = item.category || 'followup';
+  document.getElementById('edit-description').value  = item.description || '';
+  document.getElementById('edit-owner').value        = item.owner || '';
+  document.getElementById('edit-due').value          = item.dueDate || '';
+  document.getElementById('edit-followup').value     = item.followUpDate || '';
+  document.getElementById('edit-status').value       = item.status || 'open';
+  document.getElementById('edit-zone').value         = item.zone || 'parked';
+  document.getElementById('edit-zone-locked').value  = item.zoneLocked ? 'true' : 'false';
+  document.getElementById('edit-role-tag').value     = item.roleTag || '';
+  document.getElementById('edit-notes').value        = item.notes || '';
+  document.getElementById('edit-overlay').classList.add('open');
+}
+
+function closeEdit() {
+  document.getElementById('edit-overlay').classList.remove('open');
+}
+
+async function saveEdit() {
+  const id = document.getElementById('edit-id').value;
+  const data = {
+    category:    document.getElementById('edit-category').value,
+    description: document.getElementById('edit-description').value.trim(),
+    owner:       document.getElementById('edit-owner').value.trim() || null,
+    dueDate:     document.getElementById('edit-due').value.trim() || null,
+    followUpDate: document.getElementById('edit-followup').value.trim() || null,
+    status:      document.getElementById('edit-status').value,
+    zone:        document.getElementById('edit-zone').value,
+    zoneLocked:  document.getElementById('edit-zone-locked').value === 'true',
+    roleTag:     document.getElementById('edit-role-tag').value || null,
+    notes:       document.getElementById('edit-notes').value.trim(),
+  };
+  try {
+    await updateItem(id, data);
+    closeEdit();
+    showToast('Item updated', 'success');
+  } catch (e) {
+    showToast('Update failed: ' + e.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────
+// Card Actions
+// ─────────────────────────────────────────────
+function handleCardClick(id, event) {
+  if (state.selectMode) {
+    const skip = event.target.closest('.card-actions, .source-toggle, .source-snippet, select');
+    if (skip) return;
+    toggleSelect(id);
+    return;
+  }
+}
+
+async function markDone(id) {
+  await updateItem(id, { status: 'done' });
+  showToast('Marked done');
+}
+
+async function reopenItem(id) {
+  await updateItem(id, { status: 'open' });
+  showToast('Reopened');
+}
+
+async function moveToZone(id, zone) {
+  if (!zone) return;
+  await updateItem(id, { zone, zoneLocked: true });
+  showToast(`Moved to ${zone}`);
+}
+
+async function confirmDeleteItem(id) {
+  if (!confirm('Delete this item?')) return;
+  await deleteItem(id);
+  showToast('Item deleted');
+}
+```
+
+- [ ] **Step 3: Add edit modal event listeners inside `DOMContentLoaded`**
+
+```javascript
+document.getElementById('edit-close').addEventListener('click', closeEdit);
+document.getElementById('edit-cancel').addEventListener('click', closeEdit);
+document.getElementById('edit-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('edit-overlay')) closeEdit();
+});
+document.getElementById('edit-save').addEventListener('click', saveEdit);
+```
+
+- [ ] **Step 4: Verify edit modal**
+
+Import a thread so there are items on the board. Hover a card — action buttons should appear. Click "✎ Edit". Expected: Modal opens populated with item data. Change the description, click Save — card updates. Click the zone move dropdown — select "🟣 Invest" — card moves to Invest column and shows a 🔒 badge.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: edit modal with all fields, card actions — mark done, edit, zone move, delete"
+```
+
+---
+
+## Task 10: Select mode + bulk delete
+
+**Files:**
+- Modify: `commitment-radar.html` — add select mode JS
+
+- [ ] **Step 1: Add select mode functions**
+
+Add after `confirmDeleteItem`:
+
+```javascript
+// ─────────────────────────────────────────────
+// Select Mode
+// ─────────────────────────────────────────────
+function enterSelectMode() {
+  state.selectMode = true;
+  state.selectedIds = new Set();
+  document.getElementById('select-bar').classList.add('active');
+  document.getElementById('select-btn').style.display = 'none';
+  updateSelectBar();
+  renderAll();
+}
+
+function exitSelectMode() {
+  state.selectMode = false;
+  state.selectedIds = new Set();
+  document.getElementById('select-bar').classList.remove('active');
+  document.getElementById('select-btn').style.display = '';
+  updateDeleteDoneBtn();
+  renderAll();
+}
+
+function toggleSelect(id) {
+  if (state.selectedIds.has(id)) {
+    state.selectedIds.delete(id);
+  } else {
+    state.selectedIds.add(id);
+  }
+  updateSelectBar();
+  renderAll();
+}
+
+function updateSelectBar() {
+  const count = state.selectedIds.size;
+  document.getElementById('select-count').textContent = `${count} selected`;
+  document.getElementById('delete-selected-btn').style.display = count > 0 ? '' : 'none';
+}
+
+async function deleteSelected() {
+  const ids = [...state.selectedIds];
+  if (ids.length === 0) return;
+  if (!confirm(`Delete ${ids.length} item${ids.length !== 1 ? 's' : ''}?`)) return;
+  await deleteManyItems(ids);
+  exitSelectMode();
+  showToast(`${ids.length} item${ids.length !== 1 ? 's' : ''} deleted`);
+}
+
+async function deleteDone() {
+  const ids = state.items.filter(i => i.status === 'done').map(i => i.id);
+  if (ids.length === 0) return;
+  if (!confirm(`Delete all ${ids.length} done item${ids.length !== 1 ? 's' : ''}?`)) return;
+  await deleteManyItems(ids);
+  showToast(`${ids.length} done item${ids.length !== 1 ? 's' : ''} deleted`);
+}
+```
+
+- [ ] **Step 2: Wire up select mode listeners inside `DOMContentLoaded`**
+
+```javascript
+document.getElementById('select-btn').addEventListener('click', enterSelectMode);
+document.getElementById('select-cancel-btn').addEventListener('click', exitSelectMode);
+document.getElementById('select-all-btn').addEventListener('click', () => {
+  const visibleIds = document.querySelectorAll('[data-id]');
+  const allSelected = [...visibleIds].every(el => state.selectedIds.has(el.dataset.id));
+  if (allSelected) {
+    state.selectedIds = new Set();
+  } else {
+    visibleIds.forEach(el => state.selectedIds.add(el.dataset.id));
+  }
+  updateSelectBar();
+  renderAll();
+});
+document.getElementById('delete-selected-btn').addEventListener('click', deleteSelected);
+document.getElementById('delete-done-btn').addEventListener('click', deleteDone);
+```
+
+- [ ] **Step 3: Verify select mode**
+
+Open in Chrome with items on the board. Click "☐ Select". Expected: Select bar appears, checkboxes show on cards, clicking a card toggles it (highlights in blue). Click "Select All" — all cards selected. Click "Delete Selected" — confirm dialog, items deleted. Mark a couple items done, click "🗑 Delete Done".
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: select mode, bulk delete, delete done button"
+```
+
+---
+
+## Task 11: Aging engine
+
+**Files:**
+- Modify: `commitment-radar.html` — replace `runAgingEngine` stub with real implementation
+
+- [ ] **Step 1: Replace the `runAgingEngine` stub**
+
+Find `function runAgingEngine() {}` and replace it with:
+
+```javascript
+// ─────────────────────────────────────────────
+// Aging Engine
+// ─────────────────────────────────────────────
+function computeNewZone(item) {
+  if (item.zone === 'invest') return 'invest';
+  if (item.zoneLocked) return item.zone;
+
+  // Stale check: no activity in 10+ days → hot
+  if (item.lastActivityAt) {
+    const last = item.lastActivityAt.toDate ? item.lastActivityAt.toDate() : new Date(item.lastActivityAt);
+    const daysSince = Math.floor((Date.now() - last.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysSince >= 10) return 'hot';
+  }
+
+  // Date-driven zone
+  const parsed = parseDueDate(item.dueDate);
+  if (!parsed) return item.zone; // no parseable date, keep current zone
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const days = Math.round((parsed - now) / (1000 * 60 * 60 * 24));
+  if (days <= 7)  return 'hot';
+  if (days <= 30) return 'approaching';
+  return 'parked';
+}
+
+function runAgingEngine() {
+  const updates = [];
+  state.items.forEach(item => {
+    if (item.status !== 'open') return;
+    const newZone = computeNewZone(item);
+    if (newZone !== item.zone) updates.push({ id: item.id, zone: newZone });
+  });
+
+  if (updates.length === 0) return;
+
+  const batch = db.batch();
+  updates.forEach(u => {
+    batch.update(db.collection('radar_items').doc(u.id), { zone: u.zone });
+  });
+  batch.commit().catch(e => console.error('Aging engine batch error:', e));
+}
+
+// Run aging engine every 5 minutes
+setInterval(() => {
+  if (state.items.length > 0) runAgingEngine();
+}, 5 * 60 * 1000);
+```
+
+- [ ] **Step 2: Verify aging engine (manual test)**
+
+In DevTools console, temporarily call `computeNewZone` on a seeded item with `lastActivityAt` set to 11 days ago:
+```javascript
+computeNewZone({ zone: 'parked', zoneLocked: false, dueDate: null,
+  lastActivityAt: { toDate: () => new Date(Date.now() - 11*24*60*60*1000) } })
+// Expected: "hot"
+
+computeNewZone({ zone: 'parked', zoneLocked: false, dueDate: 'April 30',
+  lastActivityAt: { toDate: () => new Date() } })
+// Expected: "parked" (30+ days away)
+
+computeNewZone({ zone: 'parked', zoneLocked: false, dueDate: 'Tomorrow',
+  lastActivityAt: { toDate: () => new Date() } })
+// Expected: "hot"
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add commitment-radar.html
+git commit -m "feat: aging engine — escalates items to Hot based on dueDate proximity and inactivity"
+```
+
+---
+
+## Task 12: Firebase security rules + deploy
+
+**Files:**
+- Firebase Console (manual step)
+- Modify: `.gitignore`
+- Modify: `commitment-radar.html` (final push)
+
+- [ ] **Step 1: Add Firebase security rules for new collections**
+
+Go to Firebase Console → https://console.firebase.google.com → Project `milestone-tracker-955f4` → Firestore Database → Rules.
+
+Add rules for the two new collections (keep existing clearthread rules intact):
+
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Existing ClearThread collections
+    match /clearthread_items/{doc} {
+      allow read, write, delete: if true;
+    }
+    match /clearthread_threads/{doc} {
+      allow read, write, delete: if true;
+    }
+    // Commitment Radar collections
+    match /radar_items/{doc} {
+      allow read, write, delete: if true;
+    }
+    match /radar_threads/{doc} {
+      allow read, write, delete: if true;
+    }
+  }
+}
+```
+
+Click **Publish**. Without this, all Firestore reads/writes will silently fail.
+
+- [ ] **Step 2: Add `.superpowers` to `.gitignore`**
+
+Check if `.gitignore` exists:
+```bash
+cat /Users/gp/Documents/clearthread-repo/.gitignore
+```
+
+If it exists, add `.superpowers/` to it. If not, create it:
+```bash
+echo ".superpowers/" >> /Users/gp/Documents/clearthread-repo/.gitignore
+git add .gitignore
+git commit -m "chore: ignore .superpowers brainstorm directory"
+```
+
+- [ ] **Step 3: Final deploy**
+
+```bash
+cd /Users/gp/Documents/clearthread-repo
+git add commitment-radar.html
+git commit -m "feat: Commitment Radar v1 complete"
+git push
+```
+
+- [ ] **Step 4: Verify live**
+
+Wait ~60 seconds, then hard-refresh (Cmd+Shift+R):
+```
+https://gparrent71-hue.github.io/clearthread/commitment-radar.html
+```
+
+Expected: App loads. Open Settings, add API key. Import a short paste. Items appear on the 4-column dashboard.
+
+---
+
+## Verification Checklist (end-to-end)
+
+After deploy, verify each feature:
+
+- [ ] Settings: API key saves and persists across page reloads
+- [ ] Settings: Model selection (3 options) saves
+- [ ] Settings: Workspace Context saves and is injected into extraction
+- [ ] Paste import: Short text extracts into correct 6 categories
+- [ ] Paste import: Confidence dots appear (high/medium/low)
+- [ ] Paste import: `investSuggested` items show purple Invest? toggle in preview
+- [ ] Paste import: Zone preview chips show correct zone based on dueDate
+- [ ] File import: .txt file loads, file info panel shows character/chunk count
+- [ ] Dashboard: Items distributed across 4 columns by zone
+- [ ] Dashboard: Category filter chips filter across all columns
+- [ ] Dashboard: Status filter (Open/Done/Snoozed) works
+- [ ] Cards: Age badge appears on items with `lastActivityAt` > 7 days
+- [ ] Cards: Due date color-coding (red=overdue, amber=soon, grey=normal)
+- [ ] Card action: Mark Done → card opacity drops, moves to Done filter
+- [ ] Card action: Edit modal opens with all fields populated
+- [ ] Card action: Zone move sets `zoneLocked: true` (🔒 appears)
+- [ ] Card action: Delete removes item
+- [ ] Select mode: Checkboxes appear, Select All works, Delete Selected works
+- [ ] Delete Done button: Appears when done items exist, clears them all
+- [ ] Aging engine: `computeNewZone` returns correct zones in console test
