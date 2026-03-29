@@ -574,11 +574,196 @@ function showToast(msg, type = '') {
   toastTimer = setTimeout(() => { el.className = ''; }, 3000);
 }
 
-// Stub for renderAll — replaced in Task 3
-function renderAll() {}
-
 // Stub for runAgingEngine — replaced in Task 11
 function runAgingEngine() {}
+
+// ─────────────────────────────────────────────
+// Date Parsing
+// ─────────────────────────────────────────────
+function parseDueDate(str) {
+  if (!str) return null;
+  const s = str.toLowerCase().trim();
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+
+  if (s === 'today') return new Date(now);
+  if (s === 'tomorrow') {
+    const d = new Date(now); d.setDate(d.getDate() + 1); return d;
+  }
+  if (s.includes('end of month') || s === 'eom') {
+    return new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  }
+  if (s.includes('end of week') || s.includes('eow')) {
+    const d = new Date(now);
+    const toFriday = (5 - d.getDay() + 7) % 7 || 7;
+    d.setDate(d.getDate() + toFriday); return d;
+  }
+  if (s.includes('next week')) {
+    const d = new Date(now); d.setDate(d.getDate() + 7); return d;
+  }
+
+  const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  for (let i = 0; i < days.length; i++) {
+    if (s.includes(days[i])) {
+      const diff = (i - now.getDay() + 7) % 7 || 7;
+      const extra = s.includes('next') ? 7 : 0;
+      const d = new Date(now); d.setDate(d.getDate() + diff + extra); return d;
+    }
+  }
+
+  // Strip noise words and try native parsing
+  const cleaned = str.replace(/\b(eod|by|before|end of day|end of|@)\b/gi, '').trim();
+  const parsed = new Date(cleaned);
+  if (!isNaN(parsed.getTime())) {
+    // If parsed date is in the past and no explicit year, push to next year
+    if (parsed < now && !cleaned.match(/\d{4}/)) {
+      parsed.setFullYear(parsed.getFullYear() + 1);
+    }
+    return parsed;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────
+const CAT_LABELS = {
+  my_commitment: 'My Commitment',
+  their_commitment: 'Their Commitment',
+  waiting: 'Waiting On',
+  risk: 'Risk',
+  decision: 'Decision Needed',
+  followup: 'Follow-up',
+};
+
+const ZONE_ICONS = { hot: '🔴', approaching: '🟡', parked: '🔵', invest: '🟣' };
+
+function getFilteredItems() {
+  return state.items.filter(item => {
+    const catOk = state.filterCat === 'all' || item.category === state.filterCat;
+    const statusOk = state.filterStatus === 'all' || item.status === state.filterStatus;
+    return catOk && statusOk;
+  });
+}
+
+function getAgeDays(item) {
+  if (!item.lastActivityAt) return 0;
+  const last = item.lastActivityAt.toDate ? item.lastActivityAt.toDate() : new Date(item.lastActivityAt);
+  return Math.floor((Date.now() - last.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function getDueDateClass(dueDateStr) {
+  if (!dueDateStr) return '';
+  const parsed = parseDueDate(dueDateStr);
+  if (!parsed) return 'normal';
+  const days = Math.round((parsed - new Date()) / (1000 * 60 * 60 * 24));
+  if (days < 0) return 'overdue';
+  if (days <= 7) return 'soon';
+  return 'normal';
+}
+
+function renderItemCard(item) {
+  const ageDays = getAgeDays(item);
+  const showAgeBadge = item.zone !== 'invest' && item.status === 'open' && ageDays >= 7;
+  const dueCls = getDueDateClass(item.dueDate);
+  const isDone = item.status === 'done';
+
+  const selectCbs = state.selectMode
+    ? `<input type="checkbox" class="card-checkbox" ${state.selectedIds.has(item.id) ? 'checked' : ''}>`
+    : '';
+
+  const ageBadgeHtml = showAgeBadge
+    ? `<span class="age-badge">${ageDays}d no activity</span>`
+    : '';
+
+  const dueHtml = item.dueDate
+    ? `<span class="card-due ${dueCls}">📅 ${escHtml(item.dueDate)}</span>`
+    : '';
+
+  const ownerHtml = item.owner
+    ? `<span class="card-owner">Owner: <strong>${escHtml(item.owner)}</strong></span>`
+    : '';
+
+  const lockedHtml = item.zoneLocked ? `<span class="locked-icon" title="Zone locked">🔒</span>` : '';
+
+  const confidenceLabel = { high: '● High', medium: '● Med', low: '● Low' }[item.confidence] || '';
+  const confidenceCls = item.confidence || 'low';
+
+  const sourceHtml = item.sourceSnippet
+    ? `<span class="source-toggle" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle('open')">▸ source</span>
+       <div class="source-snippet">${escHtml(item.sourceSnippet)}</div>`
+    : '';
+
+  const doneBtn = item.status !== 'done'
+    ? `<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();markDone('${item.id}')">✓ Done</button>`
+    : `<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();reopenItem('${item.id}')">↺ Reopen</button>`;
+
+  const zoneMenu = `
+    <select class="btn btn-sm btn-secondary" style="font-size:11px;padding:3px 6px;cursor:pointer"
+      onchange="event.stopPropagation();moveToZone('${item.id}',this.value);this.value=''"
+      onclick="event.stopPropagation()">
+      <option value="">Move zone…</option>
+      <option value="hot">🔴 Hot</option>
+      <option value="approaching">🟡 Approaching</option>
+      <option value="parked">🔵 Parked</option>
+      <option value="invest">🟣 Invest</option>
+    </select>`;
+
+  const selectedCls = state.selectMode && state.selectedIds.has(item.id) ? ' selected' : '';
+  const selectableCls = state.selectMode ? ' selectable' : '';
+
+  return `
+    <div class="item-card cat-${item.category}${isDone ? ' is-done' : ''}${selectedCls}${selectableCls}"
+         data-id="${item.id}"
+         onclick="handleCardClick('${item.id}', event)">
+      ${selectCbs}
+      <div class="card-top">
+        <span class="cat-badge cat-${item.category}">${CAT_LABELS[item.category] || item.category}</span>
+        <span class="confidence-dot ${confidenceCls}">${escHtml(confidenceLabel)}</span>
+        ${lockedHtml}
+      </div>
+      <div class="card-desc">${escHtml(item.description)}</div>
+      <div class="card-meta">
+        ${ownerHtml}
+        ${dueHtml}
+        ${ageBadgeHtml}
+      </div>
+      ${sourceHtml}
+      <div class="card-actions">
+        ${doneBtn}
+        <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();openEdit('${item.id}')">✎ Edit</button>
+        ${zoneMenu}
+        <button class="btn btn-sm btn-secondary" style="color:#ef4444" onclick="event.stopPropagation();confirmDeleteItem('${item.id}')">✕</button>
+      </div>
+    </div>`;
+}
+
+function renderAll() {
+  const items = getFilteredItems();
+  const zones = ['hot', 'approaching', 'parked', 'invest'];
+  zones.forEach(zone => {
+    const zoneItems = items.filter(i => i.zone === zone);
+    document.getElementById(`count-${zone}`).textContent = zoneItems.length;
+    const container = document.getElementById(`items-${zone}`);
+    if (zoneItems.length === 0) {
+      container.innerHTML = `<div class="empty-state" style="padding:20px">
+        <div style="font-size:22px;margin-bottom:8px">${ZONE_ICONS[zone]}</div>
+        <div style="font-size:12px;color:var(--text-muted)">Nothing here</div>
+      </div>`;
+    } else {
+      container.innerHTML = zoneItems.map(renderItemCard).join('');
+    }
+  });
+  updateDeleteDoneBtn();
+}
+
+function updateDeleteDoneBtn() {
+  const btn = document.getElementById('delete-done-btn');
+  if (!btn) return;
+  const doneCount = state.items.filter(i => i.status === 'done').length;
+  btn.style.display = doneCount > 0 ? '' : 'none';
+  btn.textContent = `🗑 Delete Done (${doneCount})`;
+}
 
 // ─────────────────────────────────────────────
 // Init
