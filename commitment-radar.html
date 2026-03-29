@@ -436,7 +436,89 @@
 </div>
 
 <!-- ═══ IMPORT MODAL ═══ -->
-<!-- (populated in Task 8) -->
+<div class="overlay" id="import-overlay">
+  <div class="modal" style="width:600px;max-height:85vh">
+    <div class="modal-header">
+      <span class="modal-title">Import Thread</span>
+      <button class="modal-close" id="import-close">✕</button>
+    </div>
+
+    <!-- Input step -->
+    <div id="import-input-view">
+      <div class="modal-body">
+        <div class="tab-bar">
+          <button class="tab-btn active" id="tab-paste">Paste Text</button>
+          <button class="tab-btn" id="tab-file">Upload File</button>
+        </div>
+
+        <!-- Paste tab -->
+        <div id="paste-tab">
+          <div class="form-group">
+            <label class="form-label">Paste email thread or meeting notes</label>
+            <textarea class="form-control" id="paste-input" rows="10"
+              placeholder="Paste the content of an email thread, meeting notes, or any text containing commitments and action items…"></textarea>
+          </div>
+        </div>
+
+        <!-- File tab -->
+        <div id="file-tab" style="display:none">
+          <div id="drop-zone" style="border:2px dashed var(--border);border-radius:var(--radius);padding:32px;text-align:center;cursor:pointer;transition:border-color 0.15s">
+            <div style="font-size:32px;margin-bottom:8px">📎</div>
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px">Drop a .txt file here</div>
+            <div style="font-size:12px;color:var(--text-muted)">or <span style="color:#2563eb;cursor:pointer" id="browse-link">browse</span> to select</div>
+            <input type="file" id="file-input" accept=".txt" style="display:none">
+          </div>
+          <div class="file-info-panel" id="file-info-panel">
+            <div class="file-info-row"><strong id="file-char-count">—</strong> characters</div>
+            <div class="file-info-row" id="file-dupe-row" style="display:none"><strong id="file-dupe-count">0</strong> duplicate emails removed</div>
+            <div class="file-info-row"><strong id="file-chunk-count">—</strong> chunks to process</div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+              <div class="file-info-row"><strong>Last email from:</strong> <span id="file-last-from">—</span></div>
+              <div class="file-info-row"><strong>Sent:</strong> <span id="file-last-sent">—</span></div>
+              <div class="file-info-row"><strong>Subject:</strong> <span id="file-last-subject">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="import-cancel">Cancel</button>
+        <button class="btn btn-primary" id="import-extract-btn">Extract with Claude</button>
+      </div>
+    </div>
+
+    <!-- Extracting step -->
+    <div id="import-extracting-view" style="display:none">
+      <div class="modal-body">
+        <div class="extracting-view active">
+          <div class="spinner"></div>
+          <div class="progress-label" id="progress-label">Extracting…</div>
+          <div style="font-size:12px;color:var(--text-muted)" id="progress-sublabel"></div>
+          <button class="btn btn-secondary btn-sm" id="cancel-extract-btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preview step -->
+    <div id="import-preview-view" style="display:none">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Thread Name</label>
+          <input type="text" class="form-control" id="preview-thread-name">
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <span style="font-size:13px;font-weight:600">Extracted Items</span>
+          <span id="preview-count" style="font-size:12px;color:var(--text-muted)">0 items</span>
+        </div>
+        <div id="preview-dupe-notice" style="display:none;margin-bottom:10px;padding:8px 12px;background:#fff7ed;border:1px solid #fdba74;border-radius:var(--radius);font-size:12px;color:#c2410c"></div>
+        <div id="preview-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="preview-back-btn">← Back</button>
+        <button class="btn btn-primary" id="preview-save-btn">Save to Radar</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ═══ EDIT MODAL ═══ -->
 <!-- (populated in Task 9) -->
@@ -1079,6 +1161,437 @@ function buildSystemPrompt() {
 }
 
 // ─────────────────────────────────────────────
+// Claude API — Main Thread (paste tab)
+// ─────────────────────────────────────────────
+function sanitizeJson(str) {
+  let out = '', inStr = false, esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (esc)            { out += ch; esc = false; continue; }
+    if (ch === '\\' && inStr) { out += ch; esc = true;  continue; }
+    if (ch === '"')     { inStr = !inStr; out += ch; continue; }
+    if (inStr && ch === '\n') { out += '\\n'; continue; }
+    if (inStr && ch === '\r') { out += '\\r'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+async function extractFromText(text) {
+  if (!state.apiKey) throw new Error('No API key. Please add your Claude API key in Settings.');
+  const CHAR_LIMIT = 380000;
+  if (text.length > CHAR_LIMIT) text = text.slice(0, CHAR_LIMIT);
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': state.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: state.model,
+      max_tokens: 4096,
+      system: buildSystemPrompt(),
+      messages: [{ role: 'user', content: text }],
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const msg = err?.error?.message || `API error ${resp.status}`;
+    throw new Error(msg);
+  }
+
+  const data = await resp.json();
+  const raw = data.content?.[0]?.text || '';
+  let jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const firstBrace = jsonStr.indexOf('{');
+  const lastBrace = jsonStr.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  jsonStr = sanitizeJson(jsonStr);
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); }
+  catch { throw new Error(`Claude returned unexpected output: "${raw.slice(0, 120)}…"`); }
+  return parsed;
+}
+
+// ─────────────────────────────────────────────
+// Import Modal
+// ─────────────────────────────────────────────
+function openImport() {
+  resetImport();
+  document.getElementById('import-overlay').classList.add('open');
+}
+
+function closeImport() {
+  if (state.worker) { state.worker.terminate(); state.worker = null; }
+  document.getElementById('import-overlay').classList.remove('open');
+}
+
+function resetImport() {
+  state.importStep = 'input';
+  state.importTab = 'paste';
+  state.fileContent = null;
+  state.previewItems = [];
+  state.previewDupeCount = 0;
+  state.previewInvestToggles = {};
+  state.extractedThreadName = '';
+  if (state.worker) { state.worker.terminate(); state.worker = null; }
+  document.getElementById('paste-input').value = '';
+  document.getElementById('preview-thread-name').value = '';
+  document.getElementById('preview-list').innerHTML = '';
+  document.getElementById('file-info-panel').classList.remove('visible');
+  const fi = document.getElementById('file-input');
+  if (fi) fi.value = '';
+  setImportView('input');
+  setImportTab('paste');
+}
+
+function setImportView(view) {
+  document.getElementById('import-input-view').style.display    = view === 'input'      ? '' : 'none';
+  document.getElementById('import-extracting-view').style.display = view === 'extracting' ? '' : 'none';
+  document.getElementById('import-preview-view').style.display  = view === 'preview'    ? '' : 'none';
+  state.importStep = view;
+}
+
+function setImportTab(tab) {
+  state.importTab = tab;
+  document.getElementById('paste-tab').style.display = tab === 'paste' ? '' : 'none';
+  document.getElementById('file-tab').style.display  = tab === 'file'  ? '' : 'none';
+  document.getElementById('tab-paste').classList.toggle('active', tab === 'paste');
+  document.getElementById('tab-file').classList.toggle('active', tab === 'file');
+}
+
+// ─────────────────────────────────────────────
+// File info panel helpers
+// ─────────────────────────────────────────────
+function splitIntoChunks(text, maxChars = 380000) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return [text.slice(0, maxChars)];
+  const emails = [];
+  if (emailStarts[0] > 0) emails.push(text.slice(0, emailStarts[0]));
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    emails.push(text.slice(start, end));
+  });
+  const chunks = [];
+  let current = '';
+  for (const email of emails) {
+    if (email.length > maxChars) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(email.slice(0, maxChars));
+    } else if (current.length + email.length > maxChars) {
+      chunks.push(current); current = email;
+    } else {
+      current += email;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function showFileInfo(rawText) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(rawText)) !== null) {
+    const ahead = rawText.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  const chunks = splitIntoChunks(rawText, 50000);
+  document.getElementById('file-char-count').textContent  = rawText.length.toLocaleString();
+  document.getElementById('file-chunk-count').textContent = chunks.length;
+
+  if (emailStarts.length > 0) {
+    const lastStart = emailStarts[emailStarts.length - 1];
+    const block = rawText.slice(lastStart, lastStart + 600);
+    const from    = (block.match(/^From:\s*(.+)$/im) || [])[1] || '—';
+    const sent    = (block.match(/^Sent:\s*(.+)$/im) || [])[1] || '—';
+    const subject = (block.match(/^Subject:\s*(.+)$/im) || [])[1] || '—';
+    document.getElementById('file-last-from').textContent    = from.trim();
+    document.getElementById('file-last-sent').textContent    = sent.trim();
+    document.getElementById('file-last-subject').textContent = subject.trim();
+  }
+
+  document.getElementById('file-info-panel').classList.add('visible');
+}
+
+// ─────────────────────────────────────────────
+// Deduplication
+// ─────────────────────────────────────────────
+const DUPE_THRESHOLD = 0.72;
+const STOP_WORDS = new Set(['a','an','the','is','it','in','on','at','to','for','of','and','or','with','that','this','was','has','have','be','are']);
+
+function normalizeWords(str) {
+  return str.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w));
+}
+
+function wordSimilarity(a, b) {
+  const wa = new Set(normalizeWords(a));
+  const wb = new Set(normalizeWords(b));
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let intersection = 0;
+  wa.forEach(w => { if (wb.has(w)) intersection++; });
+  return intersection / Math.min(wa.size, wb.size);
+}
+
+function findDuplicates(newItems) {
+  const dupeIndices = new Set();
+  newItems.forEach((item, i) => {
+    for (const existing of state.items) {
+      if (wordSimilarity(item.description, existing.description) >= DUPE_THRESHOLD) {
+        dupeIndices.add(i); break;
+      }
+    }
+    if (!dupeIndices.has(i)) {
+      for (let j = 0; j < i; j++) {
+        if (!dupeIndices.has(j) && wordSimilarity(item.description, newItems[j].description) >= DUPE_THRESHOLD) {
+          dupeIndices.add(i); break;
+        }
+      }
+    }
+  });
+  return dupeIndices;
+}
+
+// ─────────────────────────────────────────────
+// Zone assignment at import time
+// ─────────────────────────────────────────────
+function assignZone(item, investAccepted) {
+  if (investAccepted) return 'invest';
+  const parsed = parseDueDate(item.dueDate);
+  if (!parsed) return 'parked';
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const days = Math.round((parsed - now) / (1000 * 60 * 60 * 24));
+  if (days <= 7)  return 'hot';
+  if (days <= 30) return 'approaching';
+  return 'parked';
+}
+
+// ─────────────────────────────────────────────
+// Preview rendering
+// ─────────────────────────────────────────────
+function renderPreview(items) {
+  state.previewItems = items;
+  // Preserve existing toggle choices — only initialize keys that don't exist yet
+  items.forEach((item, i) => {
+    if (!(i in state.previewInvestToggles)) {
+      state.previewInvestToggles[i] = !!item.investSuggested;
+    }
+  });
+  // Remove stale keys beyond current array length
+  Object.keys(state.previewInvestToggles).forEach(k => {
+    if (parseInt(k) >= items.length) delete state.previewInvestToggles[k];
+  });
+
+  const dupeIndices = findDuplicates(items);
+  state.previewDupeCount = dupeIndices.size;
+
+  const visibleItems = items.filter((_, i) => !dupeIndices.has(i));
+
+  const total = visibleItems.length;
+  const dupeNote = state.previewDupeCount > 0
+    ? ` · ${state.previewDupeCount} duplicate${state.previewDupeCount !== 1 ? 's' : ''} removed`
+    : '';
+  document.getElementById('preview-count').textContent = `${total} item${total !== 1 ? 's' : ''}${dupeNote}`;
+
+  if (state.previewDupeCount > 0) {
+    const notice = document.getElementById('preview-dupe-notice');
+    notice.textContent = `⚠ ${state.previewDupeCount} item${state.previewDupeCount !== 1 ? 's were' : ' was'} skipped as possible duplicate${state.previewDupeCount !== 1 ? 's' : ''} of items already in your dashboard.`;
+    notice.style.display = '';
+  }
+
+  const visibleWithIndex = items
+    .map((item, origIndex) => ({ item, origIndex }))
+    .filter(({ origIndex }) => !dupeIndices.has(origIndex));
+
+  document.getElementById('preview-list').innerHTML = visibleWithIndex.map(({ item, origIndex }) => {
+    const zone = assignZone(item, state.previewInvestToggles[origIndex]);
+    const zoneIcon = ZONE_ICONS[zone] || '';
+    const investOn = state.previewInvestToggles[origIndex];
+    const investHtml = item.investSuggested
+      ? `<span class="invest-toggle ${investOn ? '' : 'off'}" data-idx="${origIndex}">${investOn ? '🟣 Invest' : 'Invest?'}</span>`
+      : '';
+    const confidenceLabel = { high: '● High', medium: '● Med', low: '● Low' }[item.confidence] || '';
+    const sourceHtml = item.sourceSnippet
+      ? `<span class="source-toggle" onclick="this.nextElementSibling.classList.toggle('open')">▸ source</span>
+         <div class="source-snippet">${escHtml(item.sourceSnippet)}</div>`
+      : '';
+    return `
+      <div class="preview-item" data-orig="${origIndex}">
+        <button class="preview-item-remove" title="Remove" onclick="removePreviewItem(${origIndex})">✕</button>
+        <div class="preview-item-body">
+          <div class="preview-item-badges">
+            <span class="cat-badge cat-${item.category}">${CAT_LABELS[item.category] || item.category}</span>
+            <span class="zone-badge zone-${zone}">${zoneIcon} ${zone}</span>
+            <span class="confidence-dot ${item.confidence || 'low'}" style="font-size:11px">${escHtml(confidenceLabel)}</span>
+            ${investHtml}
+            ${item.owner ? `<span style="font-size:11px;color:var(--text-muted)">👤 ${escHtml(item.owner)}</span>` : ''}
+            ${item.dueDate ? `<span style="font-size:11px;color:var(--text-muted)">📅 ${escHtml(item.dueDate)}</span>` : ''}
+          </div>
+          <div class="preview-item-desc">${escHtml(item.description)}</div>
+          ${sourceHtml}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Invest toggle event listeners
+  document.querySelectorAll('.invest-toggle').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.dataset.idx);
+      state.previewInvestToggles[idx] = !state.previewInvestToggles[idx];
+      renderPreview(state.previewItems);
+    });
+  });
+}
+
+function removePreviewItem(origIndex) {
+  // Save current toggle state keyed by description (survives re-indexing after splice)
+  const savedByDesc = {};
+  state.previewItems.forEach((item, i) => {
+    savedByDesc[item.description] = state.previewInvestToggles[i] ?? !!item.investSuggested;
+  });
+  state.previewItems.splice(origIndex, 1);
+  // Rebuild toggle map for new indices
+  state.previewInvestToggles = {};
+  state.previewItems.forEach((item, i) => {
+    state.previewInvestToggles[i] = savedByDesc[item.description] ?? !!item.investSuggested;
+  });
+  renderPreview(state.previewItems);
+}
+
+// ─────────────────────────────────────────────
+// Save preview items to Firestore
+// ─────────────────────────────────────────────
+async function savePreviewItems() {
+  const threadId = Date.now().toString();
+  const threadTitle = document.getElementById('preview-thread-name').value.trim() || 'Untitled Thread';
+
+  const dupeIndices = findDuplicates(state.previewItems);
+  const itemsToSave = state.previewItems
+    .map((item, origIndex) => ({ item, origIndex }))
+    .filter(({ origIndex }) => !dupeIndices.has(origIndex))
+    .map(({ item, origIndex }) => {
+      const investAccepted = state.previewInvestToggles[origIndex];
+      const zone = assignZone(item, investAccepted);
+      return {
+        category:        item.category || 'followup',
+        description:     item.description || '',
+        owner:           item.owner || null,
+        dueDate:         item.dueDate || null,
+        followUpDate:    item.followUpDate || null,
+        sourceSnippet:   item.sourceSnippet || '',
+        confidence:      item.confidence || 'medium',
+        investSuggested: !!item.investSuggested,
+        outlookCategory: item.outlookCategory || null,
+        flagged:         !!item.flagged,
+        zone,
+        zoneLocked:      false,
+        roleTag:         null,
+        notes:           '',
+      };
+    });
+
+  if (itemsToSave.length === 0) {
+    showToast('No items to save', 'error');
+    return;
+  }
+
+  try {
+    document.getElementById('preview-save-btn').disabled = true;
+    document.getElementById('preview-save-btn').textContent = 'Saving…';
+    await saveItemsBatch(itemsToSave, threadId, threadTitle);
+    closeImport();
+    showToast(`${itemsToSave.length} items saved to radar`, 'success');
+  } catch (e) {
+    console.error(e);
+    showToast('Save failed: ' + e.message, 'error');
+  } finally {
+    document.getElementById('preview-save-btn').disabled = false;
+    document.getElementById('preview-save-btn').textContent = 'Save to Radar';
+  }
+}
+
+// ─────────────────────────────────────────────
+// Extraction — paste tab
+// ─────────────────────────────────────────────
+async function doExtractionPaste() {
+  const text = document.getElementById('paste-input').value.trim();
+  if (!text) { showToast('Please paste some text first', 'error'); return; }
+  if (!state.apiKey) { showToast('Please add your API key in Settings', 'error'); openSettings(); return; }
+
+  setImportView('extracting');
+  document.getElementById('progress-label').textContent = 'Extracting with Claude…';
+  document.getElementById('progress-sublabel').textContent = '';
+
+  try {
+    const result = await extractFromText(text);
+    state.extractedThreadName = result.suggestedTitle || '';
+    document.getElementById('preview-thread-name').value = state.extractedThreadName;
+    document.getElementById('preview-dupe-notice').style.display = 'none';
+    renderPreview(result.items || []);
+    setImportView('preview');
+  } catch (e) {
+    console.error(e);
+    showToast('Extraction failed: ' + e.message, 'error');
+    setImportView('input');
+  }
+}
+
+// ─────────────────────────────────────────────
+// Extraction — file tab (Web Worker)
+// ─────────────────────────────────────────────
+function doExtractionFile() {
+  if (!state.fileContent) { showToast('Please select a file first', 'error'); return; }
+  if (!state.apiKey) { showToast('Please add your API key in Settings', 'error'); openSettings(); return; }
+
+  setImportView('extracting');
+  document.getElementById('progress-label').textContent = 'Processing file…';
+  document.getElementById('progress-sublabel').textContent = '';
+
+  const workerScript = document.getElementById('extraction-worker').textContent;
+  const blob = new Blob([workerScript], { type: 'application/javascript' });
+  state.worker = new Worker(URL.createObjectURL(blob));
+
+  state.worker.onmessage = function(e) {
+    const msg = e.data;
+    if (msg.type === 'progress') {
+      document.getElementById('progress-label').textContent = `Processing chunk ${msg.current} of ${msg.total}…`;
+    } else if (msg.type === 'tick') {
+      document.getElementById('progress-sublabel').textContent = `${msg.label} (${msg.secondsLeft}s)`;
+    } else if (msg.type === 'done') {
+      state.worker = null;
+      state.extractedThreadName = msg.suggestedTitle || '';
+      document.getElementById('preview-thread-name').value = state.extractedThreadName;
+      document.getElementById('preview-dupe-notice').style.display = 'none';
+      renderPreview(msg.items || []);
+      setImportView('preview');
+      if (msg.emailsRemoved > 0) {
+        showToast(`${msg.chunkCount} chunk${msg.chunkCount !== 1 ? 's' : ''} processed · ${msg.emailsRemoved} duplicate email${msg.emailsRemoved !== 1 ? 's' : ''} removed`);
+      }
+    } else if (msg.type === 'error') {
+      state.worker = null;
+      showToast('Extraction failed: ' + msg.message, 'error');
+      setImportView('input');
+    }
+  };
+
+  state.worker.postMessage({
+    apiKey: state.apiKey,
+    text: state.fileContent,
+    systemPrompt: buildSystemPrompt(),
+  });
+}
+
+// ─────────────────────────────────────────────
 // Init
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -1125,6 +1638,63 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('radar_workspace_context', state.workspaceContext);
     closeSettings();
     showToast('Settings saved', 'success');
+  });
+
+  // Import modal open/close
+  document.getElementById('import-btn').addEventListener('click', openImport);
+  document.getElementById('import-close').addEventListener('click', closeImport);
+  document.getElementById('import-cancel').addEventListener('click', closeImport);
+  document.getElementById('import-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('import-overlay')) closeImport();
+  });
+
+  // Tab switching
+  document.getElementById('tab-paste').addEventListener('click', () => setImportTab('paste'));
+  document.getElementById('tab-file').addEventListener('click',  () => setImportTab('file'));
+
+  // Extract button
+  document.getElementById('import-extract-btn').addEventListener('click', () => {
+    if (state.importTab === 'paste') doExtractionPaste();
+    else doExtractionFile();
+  });
+
+  // Cancel extraction
+  document.getElementById('cancel-extract-btn').addEventListener('click', () => {
+    if (state.worker) { state.worker.terminate(); state.worker = null; }
+    setImportView('input');
+  });
+
+  // Preview buttons
+  document.getElementById('preview-back-btn').addEventListener('click', () => setImportView('input'));
+  document.getElementById('preview-save-btn').addEventListener('click', savePreviewItems);
+
+  // File upload
+  document.getElementById('browse-link').addEventListener('click', () => {
+    document.getElementById('file-input').click();
+  });
+  document.getElementById('file-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      state.fileContent = ev.target.result;
+      showFileInfo(state.fileContent);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  const dropZone = document.getElementById('drop-zone');
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#2563eb'; });
+  dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = ''; });
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.style.borderColor = '';
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.name.endsWith('.txt')) { showToast('Please drop a .txt file', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = ev => { state.fileContent = ev.target.result; showFileInfo(state.fileContent); };
+    reader.readAsText(file);
   });
 });
 </script>
