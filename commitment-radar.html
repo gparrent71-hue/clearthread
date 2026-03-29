@@ -521,7 +521,93 @@
 </div>
 
 <!-- ═══ EDIT MODAL ═══ -->
-<!-- (populated in Task 9) -->
+<div class="overlay" id="edit-overlay">
+  <div class="modal" style="width:520px">
+    <div class="modal-header">
+      <span class="modal-title">Edit Item</span>
+      <button class="modal-close" id="edit-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="edit-id">
+      <div class="form-group">
+        <label class="form-label">Category</label>
+        <select class="form-control" id="edit-category">
+          <option value="my_commitment">My Commitment</option>
+          <option value="their_commitment">Their Commitment</option>
+          <option value="waiting">Waiting On</option>
+          <option value="risk">Risk</option>
+          <option value="decision">Decision Needed</option>
+          <option value="followup">Follow-up</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea class="form-control" id="edit-description" style="min-height:90px"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Owner</label>
+          <input type="text" class="form-control" id="edit-owner" placeholder="e.g. Sarah, Marcus">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Due Date</label>
+          <input type="text" class="form-control" id="edit-due" placeholder="e.g. Friday, March 31">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Follow-up Date</label>
+          <input type="text" class="form-control" id="edit-followup" placeholder="e.g. Check in Thursday">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-control" id="edit-status">
+            <option value="open">Open</option>
+            <option value="done">Done</option>
+            <option value="snoozed">Snoozed</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Zone</label>
+          <select class="form-control" id="edit-zone">
+            <option value="hot">🔴 Hot</option>
+            <option value="approaching">🟡 Approaching</option>
+            <option value="parked">🔵 Parked</option>
+            <option value="invest">🟣 Invest</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Lock Zone?</label>
+          <select class="form-control" id="edit-zone-locked">
+            <option value="false">No — let aging engine move it</option>
+            <option value="true">Yes — keep it here</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Role Tag <span style="font-weight:400;text-transform:none;letter-spacing:0">(for future role lens feature)</span></label>
+        <select class="form-control" id="edit-role-tag">
+          <option value="">None</option>
+          <option value="pm">PM</option>
+          <option value="mop">MOP</option>
+          <option value="csl">CSL</option>
+          <option value="personal">Personal</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes</label>
+        <textarea class="form-control" id="edit-notes" style="min-height:70px"
+          placeholder="Any additional context…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="edit-cancel">Cancel</button>
+      <button class="btn btn-primary" id="edit-save">Save Changes</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══ SETTINGS MODAL ═══ -->
 <div class="overlay" id="settings-overlay">
@@ -1521,6 +1607,87 @@ async function savePreviewItems() {
 }
 
 // ─────────────────────────────────────────────
+// Edit Modal
+// ─────────────────────────────────────────────
+function openEdit(id) {
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+  document.getElementById('edit-id').value           = id;
+  document.getElementById('edit-category').value     = item.category || 'followup';
+  document.getElementById('edit-description').value  = item.description || '';
+  document.getElementById('edit-owner').value        = item.owner || '';
+  document.getElementById('edit-due').value          = item.dueDate || '';
+  document.getElementById('edit-followup').value     = item.followUpDate || '';
+  document.getElementById('edit-status').value       = item.status || 'open';
+  document.getElementById('edit-zone').value         = item.zone || 'parked';
+  document.getElementById('edit-zone-locked').value  = item.zoneLocked ? 'true' : 'false';
+  document.getElementById('edit-role-tag').value     = item.roleTag || '';
+  document.getElementById('edit-notes').value        = item.notes || '';
+  document.getElementById('edit-overlay').classList.add('open');
+}
+
+function closeEdit() {
+  document.getElementById('edit-overlay').classList.remove('open');
+}
+
+async function saveEdit() {
+  const id = document.getElementById('edit-id').value;
+  const data = {
+    category:    document.getElementById('edit-category').value,
+    description: document.getElementById('edit-description').value.trim(),
+    owner:       document.getElementById('edit-owner').value.trim() || null,
+    dueDate:     document.getElementById('edit-due').value.trim() || null,
+    followUpDate: document.getElementById('edit-followup').value.trim() || null,
+    status:      document.getElementById('edit-status').value,
+    zone:        document.getElementById('edit-zone').value,
+    zoneLocked:  document.getElementById('edit-zone-locked').value === 'true',
+    roleTag:     document.getElementById('edit-role-tag').value || null,
+    notes:       document.getElementById('edit-notes').value.trim(),
+  };
+  try {
+    await updateItem(id, data);
+    closeEdit();
+    showToast('Item updated', 'success');
+  } catch (e) {
+    showToast('Update failed: ' + e.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────
+// Card Actions
+// ─────────────────────────────────────────────
+function handleCardClick(id, event) {
+  if (state.selectMode) {
+    const skip = event.target.closest('.card-actions, .source-toggle, .source-snippet, select');
+    if (skip) return;
+    toggleSelect(id);
+    return;
+  }
+}
+
+async function markDone(id) {
+  await updateItem(id, { status: 'done' });
+  showToast('Marked done');
+}
+
+async function reopenItem(id) {
+  await updateItem(id, { status: 'open' });
+  showToast('Reopened');
+}
+
+async function moveToZone(id, zone) {
+  if (!zone) return;
+  await updateItem(id, { zone, zoneLocked: true });
+  showToast(`Moved to ${zone}`);
+}
+
+async function confirmDeleteItem(id) {
+  if (!confirm('Delete this item?')) return;
+  await deleteItem(id);
+  showToast('Item deleted');
+}
+
+// ─────────────────────────────────────────────
 // Extraction — paste tab
 // ─────────────────────────────────────────────
 async function doExtractionPaste() {
@@ -1663,6 +1830,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.worker) { state.worker.terminate(); state.worker = null; }
     setImportView('input');
   });
+
+  // Edit modal
+  document.getElementById('edit-close').addEventListener('click', closeEdit);
+  document.getElementById('edit-cancel').addEventListener('click', closeEdit);
+  document.getElementById('edit-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('edit-overlay')) closeEdit();
+  });
+  document.getElementById('edit-save').addEventListener('click', saveEdit);
 
   // Preview buttons
   document.getElementById('preview-back-btn').addEventListener('click', () => setImportView('input'));
