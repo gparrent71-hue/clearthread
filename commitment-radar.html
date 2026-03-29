@@ -833,6 +833,58 @@ function closeSettings() {
 }
 
 // ─────────────────────────────────────────────
+// System Prompt
+// ─────────────────────────────────────────────
+const BASE_SYSTEM_PROMPT = `You are an expert at extracting commitments, obligations, and important follow-ups from email threads and meeting notes.
+
+Analyze the provided text and extract ALL items into exactly these six categories:
+- "my_commitment": something the user (first person "I") explicitly committed to, or was directly assigned to them
+- "their_commitment": something another named person committed to or said they would do
+- "waiting": the user is blocked pending someone else's action, response, or decision
+- "risk": an unaddressed threat to schedule, scope, budget, or a key relationship that needs attention
+- "decision": a choice, approval, or go/no-go that needs to be made before work can proceed
+- "followup": a conversation, check-in, relationship touch, or non-urgent action that should happen
+
+For each item extract:
+- category: one of the six above
+- description: clear, concise description (1–2 sentences, written as a standalone item)
+- owner: the person responsible (first name or full name if mentioned, null if unclear)
+- dueDate: due date if mentioned (natural language: "Friday", "EOD March 31", etc., null if none)
+- followUpDate: a suggested re-engagement date if different from dueDate (null if none)
+- sourceSnippet: the exact quote or near-quote that led to this item (max 150 chars)
+- confidence: "high" if explicit and specific, "medium" if implied or soft, "low" if vague or speculative
+- investSuggested: true if this item has no urgency but clear long-term value — mentoring opportunities, relationship investments, learning moments, visibility opportunities, strategic follow-ups with no deadline. Otherwise false.
+- outlookCategory: if the email block is preceded by [OUTLOOK_CATEGORY: xxx], use that value; otherwise null
+- flagged: true if the email block is preceded by [OUTLOOK_FLAGGED], otherwise false
+
+Be thorough — capture everything actionable, risky, or worth tracking. Do not miss items.
+
+Return ONLY valid JSON, no prose, no markdown fences. Format:
+{
+  "suggestedTitle": "5–8 word descriptive title for this thread",
+  "items": [
+    {
+      "category": "my_commitment",
+      "description": "...",
+      "owner": "...",
+      "dueDate": null,
+      "followUpDate": null,
+      "sourceSnippet": "...",
+      "confidence": "high",
+      "investSuggested": false,
+      "outlookCategory": null,
+      "flagged": false
+    }
+  ]
+}`;
+
+function buildSystemPrompt() {
+  const ctx = state.workspaceContext.trim();
+  if (!ctx) return BASE_SYSTEM_PROMPT;
+  return `--- YOUR WORKSPACE CONTEXT ---\n${ctx}\n--- END CONTEXT ---\n\n${BASE_SYSTEM_PROMPT}`;
+}
+
+// ─────────────────────────────────────────────
 // Init
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
