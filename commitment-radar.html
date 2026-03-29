@@ -500,8 +500,202 @@ Keep under ~500 words."></textarea>
 <!-- Toast -->
 <div id="toast"></div>
 
-<!-- Web Worker script -->
-<!-- (populated in Task 7) -->
+<!-- ═══ EXTRACTION WORKER ═══ -->
+<script id="extraction-worker" type="javascript/worker">
+const CHUNK_SIZE = 50000;
+const RATE_WINDOW_MS = 65000;
+
+function stripSignature(text) {
+  let idx = text.search(/^--\s*$/m);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  idx = text.search(/^[_\-]{4,}\s*$/m);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  idx = text.search(/^(thanks|thank you|regards|best regards|kind regards|warm regards|best|sincerely|cheers|cordially)[,.]?\s*$/im);
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  return text;
+}
+
+function preprocessEmails(text) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return { text, emailsRemoved: 0 };
+
+  const blocks = [];
+  if (emailStarts[0] > 0) blocks.push({ key: null, text: text.slice(0, emailStarts[0]) });
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    const block = text.slice(start, end);
+    const fromMatch = block.match(/^From:\s*(.+)$/im);
+    const sentMatch = block.match(/^Sent:\s*(.+)$/im);
+    const key = fromMatch && sentMatch ? (fromMatch[1].trim() + '|' + sentMatch[1].trim()) : null;
+    const catMatch = block.match(/^Categories:\s*(.+)$/im);
+    const flagged = /^Flag Status:\s*Flagged/im.test(block);
+    blocks.push({ key, text: stripSignature(block), outlookCategory: catMatch ? catMatch[1].trim() : null, flagged });
+  });
+
+  const seen = new Set();
+  let emailsRemoved = 0;
+  const deduped = blocks.filter(b => {
+    if (!b.key) return true;
+    if (seen.has(b.key)) { emailsRemoved++; return false; }
+    seen.add(b.key);
+    return true;
+  });
+
+  const annotated = deduped.map(b => {
+    if (!b.key) return b.text;
+    const parts = [];
+    if (b.outlookCategory) parts.push(`OUTLOOK_CATEGORY: ${b.outlookCategory}`);
+    if (b.flagged) parts.push('OUTLOOK_FLAGGED');
+    return parts.length ? `[${parts.join(', ')}]\n` + b.text : b.text;
+  }).join('');
+
+  return { text: annotated, emailsRemoved };
+}
+
+function splitIntoChunks(text, maxChars) {
+  const emailStarts = [];
+  const re = /^From:\s+.+/gim;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const ahead = text.slice(m.index, m.index + 400);
+    if (/^Sent:\s+/im.test(ahead)) emailStarts.push(m.index);
+  }
+  if (emailStarts.length === 0) return [text.slice(0, maxChars)];
+  const emails = [];
+  if (emailStarts[0] > 0) emails.push(text.slice(0, emailStarts[0]));
+  emailStarts.forEach((start, i) => {
+    const end = i + 1 < emailStarts.length ? emailStarts[i + 1] : text.length;
+    emails.push(text.slice(start, end));
+  });
+  const chunks = [];
+  let current = '';
+  for (const email of emails) {
+    if (email.length > maxChars) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(email.slice(0, maxChars));
+    } else if (current.length + email.length > maxChars) {
+      chunks.push(current); current = email;
+    } else {
+      current += email;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function sanitizeJson(str) {
+  let out = '', inStr = false, esc = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (esc)            { out += ch; esc = false; continue; }
+    if (ch === '\\' && inStr) { out += ch; esc = true;  continue; }
+    if (ch === '"')     { inStr = !inStr; out += ch; continue; }
+    if (inStr && ch === '\n') { out += '\\n'; continue; }
+    if (inStr && ch === '\r') { out += '\\r'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+async function waitWithCountdown(seconds, label) {
+  for (let s = seconds; s > 0; s--) {
+    self.postMessage({ type: 'tick', secondsLeft: s, label });
+    await sleep(1000);
+  }
+}
+
+async function extractChunk(chunkText, apiKey, systemPrompt) {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 8192,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: chunkText }],
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const msg = err?.error?.message || `API error ${resp.status}`;
+    const error = new Error(msg);
+    if (resp.status === 429) error.isRateLimit = true;
+    throw error;
+  }
+  const data = await resp.json();
+  if (data.stop_reason === 'max_tokens') {
+    throw new Error('Response truncated — chunk too large. Try a smaller file.');
+  }
+  const raw = data.content?.[0]?.text || '';
+  let jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
+  const firstBrace = jsonStr.indexOf('{');
+  const lastBrace = jsonStr.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  jsonStr = sanitizeJson(jsonStr);
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); }
+  catch { throw new Error(`JSON parse failed. Response start: "${raw.slice(0, 80)}" / end: "${raw.slice(-80)}"`); }
+  return parsed;
+}
+
+self.onmessage = async function(e) {
+  const { apiKey, text, systemPrompt } = e.data;
+  const { text: processedText, emailsRemoved } = preprocessEmails(text);
+  const chunks = splitIntoChunks(processedText, CHUNK_SIZE);
+  let allItems = [];
+  let suggestedTitle = '';
+
+  for (let i = 0; i < chunks.length; i++) {
+    self.postMessage({ type: 'progress', current: i + 1, total: chunks.length });
+    const chunkStart = Date.now();
+
+    let result;
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      try {
+        result = await extractChunk(chunks[i], apiKey, systemPrompt);
+        break;
+      } catch (err) {
+        const isRetryable = err.isRateLimit || err.message === 'Failed to fetch' || err instanceof TypeError;
+        if (isRetryable && attempt < 3) {
+          const label = err.isRateLimit
+            ? `Rate limit — retrying chunk ${i + 1}`
+            : `Network error — retrying chunk ${i + 1}`;
+          await waitWithCountdown(30, label);
+        } else {
+          self.postMessage({ type: 'error', message: err.message || 'Extraction failed' });
+          return;
+        }
+      }
+    }
+
+    if (!suggestedTitle && result.suggestedTitle) suggestedTitle = result.suggestedTitle;
+    allItems = allItems.concat(result.items || []);
+
+    if (i < chunks.length - 1) {
+      const elapsed = Date.now() - chunkStart;
+      const remaining = Math.ceil(Math.max(0, RATE_WINDOW_MS - elapsed) / 1000);
+      if (remaining > 0) {
+        await waitWithCountdown(remaining, `Chunk ${i + 1} of ${chunks.length} complete`);
+      }
+    }
+  }
+
+  self.postMessage({ type: 'done', suggestedTitle, items: allItems, chunkCount: chunks.length, emailsRemoved });
+};
+</script>
 
 <!-- Main JS -->
 <script>
