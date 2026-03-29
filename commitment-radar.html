@@ -989,8 +989,51 @@ function showToast(msg, type = '') {
   toastTimer = setTimeout(() => { el.className = ''; }, 3000);
 }
 
-// Stub for runAgingEngine — replaced in Task 11
-function runAgingEngine() {}
+// ─────────────────────────────────────────────
+// Aging Engine
+// ─────────────────────────────────────────────
+function computeNewZone(item) {
+  if (item.zone === 'invest') return 'invest';
+  if (item.zoneLocked) return item.zone;
+
+  // Stale check: no activity in 10+ days → hot
+  if (item.lastActivityAt) {
+    const last = item.lastActivityAt.toDate ? item.lastActivityAt.toDate() : new Date(item.lastActivityAt);
+    const daysSince = Math.floor((Date.now() - last.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysSince >= 10) return 'hot';
+  }
+
+  // Date-driven zone
+  const parsed = parseDueDate(item.dueDate);
+  if (!parsed) return item.zone; // no parseable date, keep current zone
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const days = Math.round((parsed - now) / (1000 * 60 * 60 * 24));
+  if (days <= 7)  return 'hot';
+  if (days <= 30) return 'approaching';
+  return 'parked';
+}
+
+function runAgingEngine() {
+  const updates = [];
+  state.items.forEach(item => {
+    if (item.status !== 'open') return;
+    const newZone = computeNewZone(item);
+    if (newZone !== item.zone) updates.push({ id: item.id, zone: newZone });
+  });
+
+  if (updates.length === 0) return;
+
+  const batch = db.batch();
+  updates.forEach(u => {
+    batch.update(db.collection('radar_items').doc(u.id), { zone: u.zone });
+  });
+  batch.commit().catch(e => console.error('Aging engine batch error:', e));
+}
+
+// Run aging engine every 5 minutes
+setInterval(() => {
+  if (state.items.length > 0) runAgingEngine();
+}, 5 * 60 * 1000);
 
 // ─────────────────────────────────────────────
 // Date Parsing
