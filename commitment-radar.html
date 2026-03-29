@@ -1688,6 +1688,60 @@ async function confirmDeleteItem(id) {
 }
 
 // ─────────────────────────────────────────────
+// Select Mode
+// ─────────────────────────────────────────────
+function enterSelectMode() {
+  state.selectMode = true;
+  state.selectedIds = new Set();
+  document.getElementById('select-bar').classList.add('active');
+  document.getElementById('select-btn').style.display = 'none';
+  updateSelectBar();
+  renderAll();
+}
+
+function exitSelectMode() {
+  state.selectMode = false;
+  state.selectedIds = new Set();
+  document.getElementById('select-bar').classList.remove('active');
+  document.getElementById('select-btn').style.display = '';
+  updateDeleteDoneBtn();
+  renderAll();
+}
+
+function toggleSelect(id) {
+  if (state.selectedIds.has(id)) {
+    state.selectedIds.delete(id);
+  } else {
+    state.selectedIds.add(id);
+  }
+  updateSelectBar();
+  renderAll();
+}
+
+function updateSelectBar() {
+  const count = state.selectedIds.size;
+  document.getElementById('select-count').textContent = `${count} selected`;
+  document.getElementById('delete-selected-btn').style.display = count > 0 ? '' : 'none';
+}
+
+async function deleteSelected() {
+  const ids = [...state.selectedIds];
+  if (ids.length === 0) return;
+  if (!confirm(`Delete ${ids.length} item${ids.length !== 1 ? 's' : ''}?`)) return;
+  await deleteManyItems(ids);
+  exitSelectMode();
+  showToast(`${ids.length} item${ids.length !== 1 ? 's' : ''} deleted`);
+}
+
+async function deleteDone() {
+  const ids = state.items.filter(i => i.status === 'done').map(i => i.id);
+  if (ids.length === 0) return;
+  if (!confirm(`Delete all ${ids.length} done item${ids.length !== 1 ? 's' : ''}?`)) return;
+  await deleteManyItems(ids);
+  showToast(`${ids.length} done item${ids.length !== 1 ? 's' : ''} deleted`);
+}
+
+// ─────────────────────────────────────────────
 // Extraction — paste tab
 // ─────────────────────────────────────────────
 async function doExtractionPaste() {
@@ -1838,6 +1892,23 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.target === document.getElementById('edit-overlay')) closeEdit();
   });
   document.getElementById('edit-save').addEventListener('click', saveEdit);
+
+  // Select mode
+  document.getElementById('select-btn').addEventListener('click', enterSelectMode);
+  document.getElementById('select-cancel-btn').addEventListener('click', exitSelectMode);
+  document.getElementById('select-all-btn').addEventListener('click', () => {
+    const visibleIds = document.querySelectorAll('[data-id]');
+    const allSelected = [...visibleIds].every(el => state.selectedIds.has(el.dataset.id));
+    if (allSelected) {
+      state.selectedIds = new Set();
+    } else {
+      visibleIds.forEach(el => state.selectedIds.add(el.dataset.id));
+    }
+    updateSelectBar();
+    renderAll();
+  });
+  document.getElementById('delete-selected-btn').addEventListener('click', deleteSelected);
+  document.getElementById('delete-done-btn').addEventListener('click', deleteDone);
 
   // Preview buttons
   document.getElementById('preview-back-btn').addEventListener('click', () => setImportView('input'));
