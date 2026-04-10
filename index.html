@@ -8,6 +8,7 @@
   <!-- Firebase -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -930,6 +931,9 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+const auth = firebase.auth();
+
+const CLOUD_FUNCTION_URL = 'https://us-central1-milestone-tracker-955f4.cloudfunctions.net/callClaude';
 
 // ─────────────────────────────────────────────
 // App State
@@ -939,8 +943,7 @@ const state = {
   filterCat: 'all',
   filterStatus: 'open',
   filterOutlookCat: 'all',
-  apiKey: localStorage.getItem('clearthread_api_key') || '',
-  model: localStorage.getItem('clearthread_model') || 'claude-opus-4-6',
+  model: localStorage.getItem('clearthread_model') || 'claude-sonnet-4-6',
   previewItems: [],
   previewDupeCount: 0,
   extractedThreadName: '',
@@ -950,13 +953,16 @@ const state = {
   worker: null,
   selectMode: false,
   selectedIds: new Set(),
+  firestoreUnsub: null,
 };
 
 // ─────────────────────────────────────────────
 // Firestore Helpers
 // ─────────────────────────────────────────────
 function listenItems() {
-  db.collection('clearthread_items')
+  const uid = auth.currentUser.uid;
+  state.firestoreUnsub = db.collection('clearthread_items')
+    .where('userId', '==', uid)
     .orderBy('createdAt', 'desc')
     .onSnapshot(snap => {
       state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -968,17 +974,17 @@ function listenItems() {
 }
 
 async function saveItemsBatch(items, threadId, threadTitle) {
+  const uid = auth.currentUser.uid;
   const batch = db.batch();
-  // Save thread record
   const threadRef = db.collection('clearthread_threads').doc(threadId);
-  batch.set(threadRef, { title: threadTitle, importedAt: firebase.firestore.FieldValue.serverTimestamp() });
-  // Save items
+  batch.set(threadRef, { title: threadTitle, userId: uid, importedAt: firebase.firestore.FieldValue.serverTimestamp() });
   items.forEach(item => {
     const ref = db.collection('clearthread_items').doc();
     batch.set(ref, {
       ...item,
       threadId,
       threadTitle,
+      userId: uid,
       status: 'open',
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
@@ -1984,14 +1990,23 @@ document.querySelectorAll('[data-filter-status]').forEach(btn => {
 });
 
 // ─────────────────────────────────────────────
-// Init
+// Init — Auth State Listener
 // ─────────────────────────────────────────────
-listenItems();
-
-// Prompt settings if no API key
-if (!state.apiKey) {
-  setTimeout(() => showToast('Add your Claude API key in ⚙ Settings to get started'), 1500);
-}
+auth.onAuthStateChanged(user => {
+  if (user) {
+    // Signed in — show app, update header, start Firestore listener
+    document.getElementById('auth-overlay').style.display = 'none';
+    document.getElementById('user-email-display').textContent = user.email || user.displayName || 'Signed in';
+    if (state.firestoreUnsub) state.firestoreUnsub();
+    listenItems();
+  } else {
+    // Signed out — stop Firestore, clear items, show auth overlay
+    if (state.firestoreUnsub) { state.firestoreUnsub(); state.firestoreUnsub = null; }
+    state.items = [];
+    renderAll();
+    document.getElementById('auth-overlay').style.display = 'flex';
+  }
+});
 </script>
 </body>
 </html>
