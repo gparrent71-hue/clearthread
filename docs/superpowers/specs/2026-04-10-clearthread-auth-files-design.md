@@ -163,4 +163,4 @@ Firestore composite index on `userId + createdAt` created automatically on first
 - User profile management (display name, avatar)
 - Admin view across users
 - Usage tracking / rate limiting per user
-- Invite-only registration (open registration; API key requirement is natural friction barrier)
+- Invite-only registration (open registration; anyone can create an account, but usage is covered by the shared API key)
