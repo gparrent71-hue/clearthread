@@ -704,9 +704,6 @@
             placeholder="e.g. Client kickoff call, Q2 budget review…">
         </div>
 
-        <div id="no-key-warning" style="display:none;background:#fff7ed;border:1px solid #fed7aa;color:#92400e;padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-top:4px">
-          ⚠ No Claude API key set. <button onclick="openSettings()" style="background:none;border:none;color:#92400e;text-decoration:underline;cursor:pointer;font-size:13px">Add one in Settings</button> to enable extraction.
-        </div>
       </div>
 
       <!-- Step 2: Extracting -->
@@ -1547,7 +1544,6 @@ async function deleteAllDone() {
 function openImport() {
   resetImport();
   document.getElementById('import-overlay').classList.add('visible');
-  checkApiKey();
 }
 
 function closeImport() {
@@ -1558,10 +1554,6 @@ function closeImport() {
   document.getElementById('import-overlay').classList.remove('visible');
 }
 
-function checkApiKey() {
-  const warn = document.getElementById('no-key-warning');
-  warn.style.display = state.apiKey ? 'none' : 'block';
-}
 
 function resetImport() {
   setImportStep('input');
@@ -1853,7 +1845,8 @@ async function doSave() {
     const itemsToSave = state.previewItems.map(({ _id, ...rest }) => rest);
     await saveItemsBatch(itemsToSave, threadId, threadTitle);
     // Explicitly re-fetch items so dashboard updates immediately
-    const snap = await db.collection('clearthread_items').orderBy('createdAt', 'desc').get();
+    const uid = auth.currentUser.uid;
+    const snap = await db.collection('clearthread_items').where('userId', '==', uid).orderBy('createdAt', 'desc').get();
     state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderAll();
     closeImport();
