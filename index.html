@@ -798,25 +798,13 @@
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label class="form-label">Claude API Key</label>
-        <div class="key-input-wrap">
-          <input type="password" class="form-control" id="api-key-input"
-            placeholder="sk-ant-…" style="padding-right:40px">
-          <button class="key-toggle" id="key-toggle">👁</button>
-        </div>
-        <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
-          Your key is stored only in this browser's localStorage and never sent anywhere except Anthropic's API.
-          Get a key at <strong>console.anthropic.com</strong> → API Keys.
-        </div>
-      </div>
-      <div class="form-group">
         <label class="form-label">Model</label>
         <select class="form-control" id="model-select">
-          <option value="claude-opus-4-6">Claude Opus 4.6 (most capable)</option>
-          <option value="claude-haiku-4-5">Claude Haiku 4.5 (fastest, lowest cost)</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (recommended)</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fastest)</option>
         </select>
         <div style="margin-top:6px;font-size:12px;color:var(--text-muted)">
-          Opus 4.6: ~$0.01–0.05 per thread. Haiku 4.5: ~$0.001–0.005 per thread.
+          Sonnet gives better extraction quality. Haiku is faster for large files.
         </div>
       </div>
     </div>
@@ -1932,8 +1920,7 @@ async function saveEdit() {
 // Settings Modal
 // ─────────────────────────────────────────────
 function openSettings() {
-  document.getElementById('api-key-input').value = state.apiKey;
-  document.getElementById('model-select').value  = state.model;
+  document.getElementById('model-select').value = state.model;
   document.getElementById('settings-overlay').classList.add('visible');
 }
 
@@ -1942,11 +1929,8 @@ function closeSettings() {
 }
 
 function saveSettings() {
-  const key   = document.getElementById('api-key-input').value.trim();
   const model = document.getElementById('model-select').value;
-  state.apiKey = key;
-  state.model  = model;
-  localStorage.setItem('clearthread_api_key', key);
+  state.model = model;
   localStorage.setItem('clearthread_model', model);
   closeSettings();
   showToast('✓ Settings saved', 'success');
@@ -2075,11 +2059,6 @@ document.getElementById('settings-close').addEventListener('click', closeSetting
 document.getElementById('settings-cancel').addEventListener('click', closeSettings);
 document.getElementById('settings-save').addEventListener('click', saveSettings);
 
-// API key show/hide toggle
-document.getElementById('key-toggle').addEventListener('click', () => {
-  const inp = document.getElementById('api-key-input');
-  inp.type = inp.type === 'password' ? 'text' : 'password';
-});
 
 // Close overlays on backdrop click
 ['import-overlay','edit-overlay','settings-overlay'].forEach(id => {
