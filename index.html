@@ -937,7 +937,7 @@ async function waitWithCountdown(seconds, label) {
   }
 }
 
-async function extractChunk(chunkText, authToken, cloudFunctionUrl, systemPrompt) {
+async function extractChunk(chunkText, authToken, cloudFunctionUrl, model, systemPrompt) {
   const resp = await fetch(cloudFunctionUrl, {
     method: 'POST',
     headers: {
@@ -945,7 +945,7 @@ async function extractChunk(chunkText, authToken, cloudFunctionUrl, systemPrompt
       'Authorization': `Bearer ${authToken}`,
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: model,
       max_tokens: 8192,
       system: systemPrompt,
       messages: [{ role: 'user', content: chunkText }],
@@ -975,7 +975,7 @@ async function extractChunk(chunkText, authToken, cloudFunctionUrl, systemPrompt
 }
 
 self.onmessage = async function(e) {
-  const { authToken, cloudFunctionUrl, text, systemPrompt } = e.data;
+  const { authToken, cloudFunctionUrl, model, text, systemPrompt } = e.data;
   const { text: processedText, emailsRemoved } = preprocessEmails(text);
   const chunks = splitIntoChunks(processedText, CHUNK_SIZE);
   let allItems = [];
@@ -988,7 +988,7 @@ self.onmessage = async function(e) {
     let result;
     for (let attempt = 0; attempt <= 3; attempt++) {
       try {
-        result = await extractChunk(chunks[i], authToken, cloudFunctionUrl, systemPrompt);
+        result = await extractChunk(chunks[i], authToken, cloudFunctionUrl, model, systemPrompt);
         break;
       } catch (err) {
         const isRetryable = err.isRateLimit || err.message === 'Failed to fetch' || err instanceof TypeError;
@@ -1723,7 +1723,7 @@ async function runFileWorker(text) {
                           : `Processing chunk ${msg.current} of ${msg.total}…`;
         document.getElementById('extracting-sub').textContent =
           msg.total === 1 ? 'This usually takes 5–15 seconds'
-                          : `Using Haiku — ${Math.round((msg.current - 1) / msg.total * 100)}% complete`;
+                          : `${Math.round((msg.current - 1) / msg.total * 100)}% complete`;
       } else if (msg.type === 'tick') {
         document.getElementById('extracting-text').textContent =
           `${msg.label} — resuming in ${msg.secondsLeft}s`;
@@ -1744,7 +1744,7 @@ async function runFileWorker(text) {
       reject(new Error(e.message || 'Worker error'));
     };
 
-    worker.postMessage({ authToken: idToken, cloudFunctionUrl: CLOUD_FUNCTION_URL, text, systemPrompt: SYSTEM_PROMPT });
+    worker.postMessage({ authToken: idToken, cloudFunctionUrl: CLOUD_FUNCTION_URL, model: state.model, text, systemPrompt: SYSTEM_PROMPT });
   });
 }
 
