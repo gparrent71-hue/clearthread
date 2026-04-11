@@ -1515,7 +1515,8 @@ async function deleteSelected() {
     exitSelectMode();
     showToast(`✓ Deleted ${ids.length} item${ids.length !== 1 ? 's' : ''}`, 'success');
   } catch(e) {
-    showToast('Error deleting items', 'error');
+    console.error('deleteSelected error:', e);
+    showToast('Error deleting items: ' + e.message, 'error');
     updateBulkBar();
   }
 }
