@@ -2126,6 +2126,106 @@ auth.onAuthStateChanged(user => {
     document.getElementById('auth-overlay').style.display = 'flex';
   }
 });
+
+// ─────────────────────────────────────────────
+// Auth UI
+// ─────────────────────────────────────────────
+function showAuthPanel(name) {
+  ['signin','create','forgot'].forEach(p => {
+    document.getElementById(`auth-panel-${p}`).style.display = p === name ? 'block' : 'none';
+  });
+  document.getElementById('auth-signin-error').textContent = '';
+  document.getElementById('auth-create-error').textContent = '';
+  document.getElementById('auth-forgot-error').textContent = '';
+  document.getElementById('auth-forgot-success').style.display = 'none';
+}
+
+async function doSignIn() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const errEl = document.getElementById('auth-signin-error');
+  errEl.textContent = '';
+  try {
+    await auth.signInWithEmailAndPassword(email, password);
+  } catch (e) {
+    errEl.textContent = friendlyAuthError(e.code);
+  }
+}
+
+async function doCreateAccount() {
+  const email = document.getElementById('auth-create-email').value.trim();
+  const password = document.getElementById('auth-create-password').value;
+  const confirm = document.getElementById('auth-create-confirm').value;
+  const errEl = document.getElementById('auth-create-error');
+  errEl.textContent = '';
+  if (password !== confirm) { errEl.textContent = 'Passwords do not match.'; return; }
+  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters.'; return; }
+  try {
+    await auth.createUserWithEmailAndPassword(email, password);
+  } catch (e) {
+    errEl.textContent = friendlyAuthError(e.code);
+  }
+}
+
+async function doSendReset() {
+  const email = document.getElementById('auth-forgot-email').value.trim();
+  const errEl = document.getElementById('auth-forgot-error');
+  const successEl = document.getElementById('auth-forgot-success');
+  errEl.textContent = '';
+  successEl.style.display = 'none';
+  if (!email) { errEl.textContent = 'Please enter your email address.'; return; }
+  try {
+    await auth.sendPasswordResetEmail(email);
+    successEl.style.display = 'block';
+    document.getElementById('btn-send-reset').disabled = true;
+  } catch (e) {
+    errEl.textContent = friendlyAuthError(e.code);
+  }
+}
+
+async function doGoogleSignIn() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  try {
+    await auth.signInWithPopup(provider);
+  } catch (e) {
+    document.getElementById('auth-signin-error').textContent = friendlyAuthError(e.code);
+  }
+}
+
+function doSignOut() {
+  auth.signOut();
+}
+
+function friendlyAuthError(code) {
+  const msgs = {
+    'auth/invalid-email': 'Please enter a valid email address.',
+    'auth/user-not-found': 'No account found with that email.',
+    'auth/wrong-password': 'Incorrect password.',
+    'auth/email-already-in-use': 'An account with this email already exists.',
+    'auth/weak-password': 'Password must be at least 6 characters.',
+    'auth/too-many-requests': 'Too many attempts. Please try again later.',
+    'auth/invalid-credential': 'Incorrect email or password.',
+    'auth/popup-closed-by-user': '',
+  };
+  return msgs[code] || 'Something went wrong. Please try again.';
+}
+
+// Auth event listeners
+document.getElementById('btn-signin').addEventListener('click', doSignIn);
+document.getElementById('btn-create-account').addEventListener('click', doCreateAccount);
+document.getElementById('btn-send-reset').addEventListener('click', doSendReset);
+document.getElementById('btn-google-signin').addEventListener('click', doGoogleSignIn);
+document.getElementById('btn-google-create').addEventListener('click', doGoogleSignIn);
+document.getElementById('btn-signout').addEventListener('click', doSignOut);
+document.getElementById('link-to-create').addEventListener('click', e => { e.preventDefault(); showAuthPanel('create'); });
+document.getElementById('link-to-forgot').addEventListener('click', e => { e.preventDefault(); showAuthPanel('forgot'); });
+document.getElementById('link-to-signin-from-create').addEventListener('click', e => { e.preventDefault(); showAuthPanel('signin'); });
+document.getElementById('link-to-signin-from-forgot').addEventListener('click', e => { e.preventDefault(); showAuthPanel('signin'); });
+
+// Submit on Enter key in auth inputs
+document.getElementById('auth-password').addEventListener('keydown', e => { if (e.key === 'Enter') doSignIn(); });
+document.getElementById('auth-create-confirm').addEventListener('keydown', e => { if (e.key === 'Enter') doCreateAccount(); });
+document.getElementById('auth-forgot-email').addEventListener('keydown', e => { if (e.key === 'Enter') doSendReset(); });
 </script>
 </body>
 </html>
