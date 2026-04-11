@@ -452,6 +452,53 @@
       border: 1px solid #e2e8f0; flex-shrink: 0;
     }
     .flag-badge { font-size: 12px; flex-shrink: 0; }
+
+    /* ── Auth Overlay ── */
+    .auth-overlay {
+      position: fixed; inset: 0; background: rgba(15,23,42,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .auth-card {
+      background: var(--surface); border-radius: 12px;
+      padding: 36px 32px; width: 380px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+    }
+    .auth-logo {
+      font-size: 22px; font-weight: 700; color: var(--text);
+      letter-spacing: -0.3px; text-align: center; margin-bottom: 28px;
+    }
+    .auth-logo span { color: var(--action); }
+    .auth-title {
+      font-size: 18px; font-weight: 600; color: var(--text);
+      margin-bottom: 20px;
+    }
+    .auth-subtitle {
+      font-size: 13px; color: var(--text-muted); margin-bottom: 16px;
+    }
+    .auth-error {
+      font-size: 12px; color: #dc2626; margin-bottom: 10px; min-height: 16px;
+    }
+    .auth-success {
+      font-size: 13px; color: #059669; margin-bottom: 12px;
+      padding: 10px 12px; background: #ecfdf5; border-radius: var(--radius);
+    }
+    .btn-full { width: 100%; justify-content: center; margin-bottom: 10px; }
+    .auth-divider {
+      display: flex; align-items: center; gap: 12px;
+      margin: 14px 0; color: var(--text-muted); font-size: 12px;
+    }
+    .auth-divider::before, .auth-divider::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+    .auth-links {
+      display: flex; justify-content: space-between; margin-top: 16px;
+    }
+    .auth-links a {
+      font-size: 12px; color: var(--action); text-decoration: none;
+    }
+    .auth-links a:hover { text-decoration: underline; }
+    .auth-panel { display: block; }
   </style>
 </head>
 <body>
@@ -460,6 +507,8 @@
 <header>
   <div class="logo">Clear<span>Thread</span></div>
   <div class="header-actions">
+    <span id="user-email-display" style="font-size:12px;color:var(--text-muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+    <button class="btn btn-secondary" id="btn-signout" style="font-size:12px;padding:5px 10px">Sign Out</button>
     <button class="btn btn-primary" id="btn-import">＋ Import Thread</button>
     <button class="btn-icon" id="btn-settings" title="Settings">⚙</button>
   </div>
@@ -532,6 +581,76 @@
     </div>
     <div id="items-container"></div>
   </main>
+</div>
+
+<!-- ═══ AUTH OVERLAY ═══ -->
+<div id="auth-overlay" class="auth-overlay" style="display:none">
+  <div class="auth-card">
+    <div class="auth-logo">Clear<span>Thread</span></div>
+
+    <!-- Sign In panel -->
+    <div id="auth-panel-signin" class="auth-panel">
+      <h2 class="auth-title">Sign in</h2>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input type="email" class="form-control" id="auth-email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input type="password" class="form-control" id="auth-password" placeholder="Password" autocomplete="current-password">
+      </div>
+      <div id="auth-signin-error" class="auth-error"></div>
+      <button class="btn btn-primary btn-full" id="btn-signin">Sign In</button>
+      <div class="auth-divider"><span>or</span></div>
+      <button class="btn btn-secondary btn-full" id="btn-google-signin">Continue with Google</button>
+      <div class="auth-links">
+        <a href="#" id="link-to-create">Create account</a>
+        <a href="#" id="link-to-forgot">Forgot password?</a>
+      </div>
+    </div>
+
+    <!-- Create Account panel -->
+    <div id="auth-panel-create" class="auth-panel" style="display:none">
+      <h2 class="auth-title">Create account</h2>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input type="email" class="form-control" id="auth-create-email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input type="password" class="form-control" id="auth-create-password" placeholder="At least 6 characters" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confirm Password</label>
+        <input type="password" class="form-control" id="auth-create-confirm" placeholder="Repeat password" autocomplete="new-password">
+      </div>
+      <div id="auth-create-error" class="auth-error"></div>
+      <button class="btn btn-primary btn-full" id="btn-create-account">Create Account</button>
+      <div class="auth-divider"><span>or</span></div>
+      <button class="btn btn-secondary btn-full" id="btn-google-create">Continue with Google</button>
+      <div class="auth-links">
+        <a href="#" id="link-to-signin-from-create">Back to sign in</a>
+      </div>
+    </div>
+
+    <!-- Forgot Password panel -->
+    <div id="auth-panel-forgot" class="auth-panel" style="display:none">
+      <h2 class="auth-title">Reset password</h2>
+      <p class="auth-subtitle">Enter your email and we'll send you a reset link.</p>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input type="email" class="form-control" id="auth-forgot-email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div id="auth-forgot-error" class="auth-error"></div>
+      <div id="auth-forgot-success" class="auth-success" style="display:none">
+        Check your email for a reset link.
+      </div>
+      <button class="btn btn-primary btn-full" id="btn-send-reset">Send Reset Email</button>
+      <div class="auth-links">
+        <a href="#" id="link-to-signin-from-forgot">Back to sign in</a>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══ IMPORT MODAL ═══ -->
