@@ -1163,20 +1163,15 @@ Return ONLY valid JSON, no prose, no markdown fences. Format:
 }`;
 
 async function extractFromText(text, modelOverride) {
-  const apiKey = state.apiKey;
-  if (!apiKey) throw new Error('No API key set. Please add your Claude API key in Settings.');
-
-  // Safety limit per call — chunking handles splitting before this point
   const CHAR_LIMIT = 380000;
   if (text.length > CHAR_LIMIT) text = text.slice(0, CHAR_LIMIT);
 
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+  const idToken = await auth.currentUser.getIdToken();
+  const resp = await fetch(CLOUD_FUNCTION_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
+      'Authorization': `Bearer ${idToken}`,
     },
     body: JSON.stringify({
       model: modelOverride || state.model,
@@ -1197,7 +1192,6 @@ async function extractFromText(text, modelOverride) {
   const data = await resp.json();
   const raw = data.content?.[0]?.text || '';
 
-  // Strip markdown fences, then find the outermost { } in case Claude added surrounding text
   let jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
   const firstBrace = jsonStr.indexOf('{');
   const lastBrace = jsonStr.lastIndexOf('}');
@@ -1764,10 +1758,6 @@ async function doExtraction() {
 
   if (!text) {
     showImportError('Please paste some text or upload a file first.');
-    return;
-  }
-  if (!state.apiKey) {
-    showImportError('Please add your Claude API key in Settings first.');
     return;
   }
 
