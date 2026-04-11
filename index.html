@@ -10,6 +10,10 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 
+  <!-- File parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -681,8 +685,8 @@
           <div class="upload-area" id="upload-area">
             <div class="upload-icon">📄</div>
             <div class="upload-label">Drop a .txt file here, or click to browse</div>
-            <div class="upload-hint">Supports .txt files (email chains, meeting notes)</div>
-            <input type="file" id="file-input" accept=".txt">
+            <div class="upload-hint">Supports .txt, .docx, and .pdf files (email chains, meeting notes)</div>
+            <input type="file" id="file-input" accept=".txt,.docx,.pdf">
           </div>
           <div id="file-name" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
           <div id="file-info">
@@ -1038,6 +1042,9 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 
 const CLOUD_FUNCTION_URL = 'https://us-central1-milestone-tracker-955f4.cloudfunctions.net/callClaude';
+
+// pdf.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 // ─────────────────────────────────────────────
 // App State
@@ -1990,50 +1997,90 @@ function parseLastEmail(text) {
 }
 
 function readFile(file) {
-  if (!file.name.endsWith('.txt')) {
-    showToast('Please upload a .txt file', 'error');
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['txt', 'docx', 'pdf'].includes(ext)) {
+    showToast('Please upload a .txt, .docx, or .pdf file', 'error');
     return;
   }
-  const reader = new FileReader();
-  reader.onload = e => {
-    state.fileContent = e.target.result;
-    document.getElementById('file-name').textContent = `✓ ${file.name} loaded`;
+  if (ext === 'txt') {
+    const reader = new FileReader();
+    reader.onload = e => processFileContent(e.target.result, file.name, 'TXT');
+    reader.readAsText(file);
+  } else if (ext === 'docx') {
+    readDocxFile(file);
+  } else {
+    readPdfFile(file);
+  }
+}
 
-    // Character count and chunk info
-    const total = state.fileContent.length;
-    const { text: processedText, emailsRemoved } = preprocessEmails(state.fileContent);
-    const chunks = splitIntoChunks(processedText, 50000);
-    const sizeEl = document.getElementById('file-info-size');
-    let sizeText = `${total.toLocaleString()} chars`;
-    if (emailsRemoved > 0) sizeText += ` · ${emailsRemoved} duplicate email${emailsRemoved !== 1 ? 's' : ''} removed`;
-    sizeText += chunks.length > 1
-      ? ` — will be processed in ${chunks.length} chunks using Haiku`
-      : ` — full file will be sent to Claude`;
-    sizeEl.textContent = sizeText;
-    sizeEl.className = 'file-info-size';
-
-    // Last email details
-    const email = parseLastEmail(state.fileContent);
-    const emailSection = document.getElementById('file-info-email');
-    const emailRows    = document.getElementById('file-info-email-rows');
-    if (email) {
-      const row = (label, val) => val
-        ? `<div class="file-info-row"><strong>${label}</strong><span>${escHtml(val)}</span></div>`
-        : '';
-      emailRows.innerHTML = row('From:', email.from) + row('Sent:', email.sent) + row('Subject:', email.subject);
-      emailSection.style.display = '';
-    } else {
-      emailSection.style.display = 'none';
+async function readDocxFile(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  try {
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    if (!result.value.trim()) {
+      showToast('Could not read this Word file. Try saving as .docx from Word or Google Docs.', 'error');
+      return;
     }
-    document.getElementById('file-info').style.display = 'block';
+    processFileContent(result.value, file.name, 'DOCX');
+  } catch {
+    showToast('Could not read this Word file. Try saving as .docx from Word or Google Docs.', 'error');
+  }
+}
 
-    // Pre-fill thread name from filename
-    const threadName = document.getElementById('thread-name-input');
-    if (!threadName.value) {
-      threadName.value = file.name.replace(/\.txt$/i, '').replace(/[-_]/g, ' ');
+async function readPdfFile(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  try {
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      fullText += content.items.map(item => item.str).join(' ') + '\n';
     }
-  };
-  reader.readAsText(file);
+    if (!fullText.trim()) {
+      showToast("This PDF doesn't contain extractable text. Try exporting from your meeting notes app as a text-based PDF.", 'error');
+      return;
+    }
+    processFileContent(fullText, file.name, 'PDF');
+  } catch {
+    showToast("This PDF doesn't contain extractable text. Try exporting from your meeting notes app as a text-based PDF.", 'error');
+  }
+}
+
+function processFileContent(text, fileName, fileType) {
+  state.fileContent = text;
+  document.getElementById('file-name').textContent = `✓ ${fileName} loaded`;
+
+  const total = text.length;
+  const { text: processedText, emailsRemoved } = preprocessEmails(text);
+  const chunks = splitIntoChunks(processedText, 50000);
+  const sizeEl = document.getElementById('file-info-size');
+  let sizeText = `${fileType} · ${total.toLocaleString()} chars`;
+  if (emailsRemoved > 0) sizeText += ` · ${emailsRemoved} duplicate email${emailsRemoved !== 1 ? 's' : ''} removed`;
+  sizeText += chunks.length > 1
+    ? ` — will be processed in ${chunks.length} chunks using Haiku`
+    : ` — full file will be sent to Claude`;
+  sizeEl.textContent = sizeText;
+  sizeEl.className = 'file-info-size';
+
+  const email = parseLastEmail(text);
+  const emailSection = document.getElementById('file-info-email');
+  const emailRows = document.getElementById('file-info-email-rows');
+  if (email) {
+    const row = (label, val) => val
+      ? `<div class="file-info-row"><strong>${label}</strong><span>${escHtml(val)}</span></div>`
+      : '';
+    emailRows.innerHTML = row('From:', email.from) + row('Sent:', email.sent) + row('Subject:', email.subject);
+    emailSection.style.display = '';
+  } else {
+    emailSection.style.display = 'none';
+  }
+  document.getElementById('file-info').style.display = 'block';
+
+  const threadName = document.getElementById('thread-name-input');
+  if (!threadName.value) {
+    threadName.value = fileName.replace(/\.(txt|docx|pdf)$/i, '').replace(/[-_]/g, ' ');
+  }
 }
 
 // Edit modal
