@@ -222,6 +222,12 @@
       background: var(--deadline-bg); padding: 3px 8px; border-radius: 4px;
     }
 
+    .tag-badge {
+      font-size: 11px; padding: 2px 7px; border-radius: 3px;
+      background: #f1f5f9; color: #475569; font-weight: 500;
+      flex-shrink: 0;
+    }
+
     .item-description {
       font-size: 14px; color: var(--text); line-height: 1.5; margin-bottom: 8px;
     }
@@ -447,6 +453,13 @@
       background: #fff7ed; border: 1px solid #fed7aa; color: #92400e;
       padding: 8px 12px; border-radius: var(--radius);
       font-size: 12px; margin-bottom: 10px;
+    }
+
+    /* ── Preview item edit panel ── */
+    .preview-edit-panel {
+      margin-top: 10px; padding: 10px; background: #f8fafc;
+      border-radius: 6px; border: 1px solid var(--border);
+      grid-template-columns: 1fr 1fr 1fr; gap: 10px;
     }
 
     /* ── Outlook metadata badges ── */
@@ -1125,6 +1138,16 @@ function sanitizeJson(str) {
     out += ch;
   }
   return out;
+}
+
+// ─────────────────────────────────────────────
+// Date Helpers
+// ─────────────────────────────────────────────
+
+function isIsoDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s || ''); }
+function formatDate(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 const SYSTEM_PROMPT = `You are an expert at extracting actionable information from email threads and meeting notes.
