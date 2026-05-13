@@ -1365,11 +1365,19 @@ function renderItems() {
 
 function renderItemCard(item) {
   const isDone = item.status === 'done';
-  const dueHtml = item.dueDate
-    ? `<span class="due-badge">📅 ${escHtml(item.dueDate)}</span>`
+  const dueDisplay = item.dueDate
+    ? (isIsoDate(item.dueDate) ? formatDate(item.dueDate) : item.dueDate)
+    : null;
+  const dueHtml = dueDisplay
+    ? `<span class="due-badge">📅 ${escHtml(dueDisplay)}</span>`
     : '';
   const ownerHtml = item.owner
     ? `<span>👤 ${escHtml(item.owner)}</span>` : '';
+  const startHtml = item.startDate
+    ? `<span>🗓 ${escHtml(formatDate(item.startDate))}</span>` : '';
+  const tagsHtml = (item.tags && item.tags.length)
+    ? item.tags.map(t => `<span class="tag-badge">${escHtml(t)}</span>`).join('')
+    : '';
   const outlookCatHtml = item.outlookCategory
     ? `<span class="outlook-cat-badge">🏷 ${escHtml(item.outlookCategory)}</span>` : '';
   const flagHtml = item.flagged
@@ -1390,6 +1398,7 @@ function renderItemCard(item) {
       <div class="item-card-header">
         ${cbHtml}
         <span class="cat-badge ${item.category}">${CAT_LABELS[item.category]}</span>
+        ${tagsHtml}
         ${flagHtml}${outlookCatHtml}
         ${dueHtml}
         <div class="item-meta-right">
@@ -1400,7 +1409,7 @@ function renderItemCard(item) {
       ${notesHtml}
       <div class="item-footer">
         <div class="item-info">
-          ${ownerHtml}${threadHtml}
+          ${ownerHtml}${startHtml}${threadHtml}
           ${item.sourceSnippet
             ? `<button class="source-toggle" onclick="event.stopPropagation();toggleSource(this)">view source</button>`
             : ''}
