@@ -222,6 +222,12 @@
       background: var(--deadline-bg); padding: 3px 8px; border-radius: 4px;
     }
 
+    .tag-badge {
+      font-size: 11px; padding: 2px 7px; border-radius: 3px;
+      background: #f1f5f9; color: #475569; font-weight: 500;
+      flex-shrink: 0;
+    }
+
     .item-description {
       font-size: 14px; color: var(--text); line-height: 1.5; margin-bottom: 8px;
     }
@@ -449,6 +455,14 @@
       font-size: 12px; margin-bottom: 10px;
     }
 
+    /* ── Preview item edit panel ── */
+    .preview-edit-panel {
+      display: grid;
+      margin-top: 10px; padding: 10px; background: #f8fafc;
+      border-radius: 6px; border: 1px solid var(--border);
+      grid-template-columns: 1fr 1fr 1fr; gap: 10px;
+    }
+
     /* ── Outlook metadata badges ── */
     .outlook-cat-badge {
       font-size: 10px; padding: 2px 6px; border-radius: 3px;
@@ -574,6 +588,14 @@
         <div class="content-subtitle" id="view-subtitle">Loading…</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
+        <select id="sort-select" class="form-control" style="width:auto;font-size:13px;padding:6px 10px">
+          <option value="date-added">Date Added</option>
+          <option value="due-asc">Due Date ↑</option>
+          <option value="due-desc">Due Date ↓</option>
+          <option value="start-asc">Start Date ↑</option>
+          <option value="start-desc">Start Date ↓</option>
+          <option value="tag-az">Tag A→Z</option>
+        </select>
         <div class="bulk-bar" id="bulk-bar">
           <button class="btn btn-secondary" id="btn-select-all" onclick="selectAll()">Select All</button>
           <button class="btn btn-danger" id="btn-delete-selected" onclick="deleteSelected()" disabled>Delete Selected</button>
@@ -765,8 +787,19 @@
           <input type="text" class="form-control" id="edit-owner" placeholder="e.g. John, Sarah">
         </div>
         <div class="form-group">
+          <label class="form-label">Start Date</label>
+          <input type="date" class="form-control" id="edit-start">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Tags</label>
+          <input type="text" class="form-control" id="edit-tags" placeholder="e.g. Q2, Project-X">
+        </div>
+        <div class="form-group">
           <label class="form-label">Due Date</label>
-          <input type="text" class="form-control" id="edit-due" placeholder="e.g. Friday, March 31">
+          <input type="date" class="form-control" id="edit-due">
+          <div id="edit-due-hint" style="margin-top:4px;font-size:11px;color:var(--text-muted)"></div>
         </div>
       </div>
       <div class="form-group">
@@ -1061,6 +1094,7 @@ const state = {
   worker: null,
   selectMode: false,
   selectedIds: new Set(),
+  sortBy: 'date-added',
   firestoreUnsub: null,
 };
 
@@ -1125,6 +1159,17 @@ function sanitizeJson(str) {
     out += ch;
   }
   return out;
+}
+
+// ─────────────────────────────────────────────
+// Date Helpers
+// ─────────────────────────────────────────────
+
+function isIsoDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s || ''); }
+function formatDate(iso) {
+  if (!isIsoDate(iso)) return iso || '';
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 const SYSTEM_PROMPT = `You are an expert at extracting actionable information from email threads and meeting notes.
@@ -1214,13 +1259,44 @@ const CAT_LABELS = {
   waiting: 'Waiting On', decision: 'Decision', ambiguity: 'Ambiguity'
 };
 
+function parseSortDate(d) { return isIsoDate(d) ? d : null; }
+
 function getFilteredItems() {
-  return state.items.filter(item => {
+  let items = state.items.filter(item => {
     const catMatch = state.filterCat === 'all' || item.category === state.filterCat;
     const statusMatch = state.filterStatus === 'all' || item.status === state.filterStatus;
     const outlookMatch = state.filterOutlookCat === 'all' || item.outlookCategory === state.filterOutlookCat;
     return catMatch && statusMatch && outlookMatch;
   });
+
+  const sort = state.sortBy;
+  if (sort === 'due-asc' || sort === 'due-desc') {
+    items = items.slice().sort((a, b) => {
+      const da = parseSortDate(a.dueDate), db = parseSortDate(b.dueDate);
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return sort === 'due-asc' ? da.localeCompare(db) : db.localeCompare(da);
+    });
+  } else if (sort === 'start-asc' || sort === 'start-desc') {
+    items = items.slice().sort((a, b) => {
+      const da = parseSortDate(a.startDate), db = parseSortDate(b.startDate);
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return sort === 'start-asc' ? da.localeCompare(db) : db.localeCompare(da);
+    });
+  } else if (sort === 'tag-az') {
+    items = items.slice().sort((a, b) => {
+      const ta = (a.tags && a.tags[0]) ? a.tags[0].toLowerCase() : null;
+      const tb = (b.tags && b.tags[0]) ? b.tags[0].toLowerCase() : null;
+      if (!ta && !tb) return 0;
+      if (!ta) return 1;
+      if (!tb) return -1;
+      return ta.localeCompare(tb);
+    });
+  }
+  return items;
 }
 
 function renderAll() {
@@ -1301,11 +1377,19 @@ function renderItems() {
 
 function renderItemCard(item) {
   const isDone = item.status === 'done';
-  const dueHtml = item.dueDate
-    ? `<span class="due-badge">📅 ${escHtml(item.dueDate)}</span>`
+  const dueDisplay = item.dueDate
+    ? (isIsoDate(item.dueDate) ? formatDate(item.dueDate) : item.dueDate)
+    : null;
+  const dueHtml = dueDisplay
+    ? `<span class="due-badge">📅 ${escHtml(dueDisplay)}</span>`
     : '';
   const ownerHtml = item.owner
     ? `<span>👤 ${escHtml(item.owner)}</span>` : '';
+  const startHtml = item.startDate
+    ? `<span>🗓 ${escHtml(formatDate(item.startDate))}</span>` : '';
+  const tagsHtml = (item.tags && item.tags.length)
+    ? item.tags.map(t => `<span class="tag-badge">${escHtml(t)}</span>`).join('')
+    : '';
   const outlookCatHtml = item.outlookCategory
     ? `<span class="outlook-cat-badge">🏷 ${escHtml(item.outlookCategory)}</span>` : '';
   const flagHtml = item.flagged
@@ -1326,6 +1410,7 @@ function renderItemCard(item) {
       <div class="item-card-header">
         ${cbHtml}
         <span class="cat-badge ${item.category}">${CAT_LABELS[item.category]}</span>
+        ${tagsHtml}
         ${flagHtml}${outlookCatHtml}
         ${dueHtml}
         <div class="item-meta-right">
@@ -1336,7 +1421,7 @@ function renderItemCard(item) {
       ${notesHtml}
       <div class="item-footer">
         <div class="item-info">
-          ${ownerHtml}${threadHtml}
+          ${ownerHtml}${startHtml}${threadHtml}
           ${item.sourceSnippet
             ? `<button class="source-toggle" onclick="event.stopPropagation();toggleSource(this)">view source</button>`
             : ''}
@@ -1812,11 +1897,34 @@ function renderPreview() {
         <div class="preview-item-desc">${escHtml(item.description)}</div>
         <div class="preview-item-meta">
           ${item.owner ? `<span>👤 ${escHtml(item.owner)}</span>` : ''}
-          ${item.dueDate ? `<span>📅 ${escHtml(item.dueDate)}</span>` : ''}
+          ${item.dueDate && !isIsoDate(item.dueDate) ? `<span>📅 ${escHtml(item.dueDate)}</span>` : ''}
           ${item.sourceSnippet ? `<span title="${escHtml(item.sourceSnippet)}">📌 has source</span>` : ''}
         </div>
+        <div id="preview-edit-${item._id}" class="preview-edit-panel" style="display:none">
+          <div>
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px;text-transform:uppercase;font-weight:600">Tags</label>
+            <input type="text" class="form-control" style="font-size:12px" placeholder="e.g. Q2, Project-X"
+              value="${item.tags ? item.tags.join(', ') : ''}"
+              oninput="updatePreviewItem(${item._id}, 'tags', this.value)">
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px;text-transform:uppercase;font-weight:600">Start Date</label>
+            <input type="date" class="form-control" style="font-size:12px"
+              value="${item.startDate || ''}"
+              oninput="updatePreviewItem(${item._id}, 'startDate', this.value)">
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px;text-transform:uppercase;font-weight:600">Due Date${item.dueDate && !isIsoDate(item.dueDate) ? ` <span style="font-weight:normal;color:var(--text-light)">(${escHtml(item.dueDate)})</span>` : ''}</label>
+            <input type="date" class="form-control" style="font-size:12px"
+              value="${isIsoDate(item.dueDate || '') ? item.dueDate : ''}"
+              oninput="updatePreviewItem(${item._id}, 'dueDate', this.value)">
+          </div>
+        </div>
       </div>
-      <button class="preview-delete" onclick="removePreviewItem(${item._id})" title="Remove this item">✕</button>
+      <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;padding-top:2px">
+        <button class="preview-delete" onclick="togglePreviewEdit(${item._id})" title="Add tags & dates" style="color:var(--text-muted)">✏</button>
+        <button class="preview-delete" onclick="removePreviewItem(${item._id})" title="Remove this item">✕</button>
+      </div>
     </div>
   `).join('');
 }
@@ -1827,6 +1935,29 @@ function removePreviewItem(id) {
   const actionBtn = document.getElementById('import-action');
   actionBtn.textContent = `Save ${state.previewItems.length} Item${state.previewItems.length !== 1 ? 's' : ''} to Dashboard`;
   document.getElementById('import-modal-title').textContent = `Review Extracted Items (${state.previewItems.length})`;
+}
+
+function togglePreviewEdit(id) {
+  const panel = document.getElementById(`preview-edit-${id}`);
+  if (!panel) return;
+  panel.style.display = panel.style.display === 'none' ? '' : 'none';
+}
+
+function updatePreviewItem(id, field, value) {
+  const item = state.previewItems.find(i => i._id === id);
+  if (!item) return;
+  if (field === 'tags') {
+    item.tags = value.split(',').map(t => t.trim()).filter(Boolean);
+  } else {
+    item[field] = value || null;
+    if (field === 'dueDate') {
+      const meta = document.querySelector(`#preview-${id} .preview-item-meta`);
+      if (meta) {
+        const dueSp = [...meta.querySelectorAll('span')].find(s => s.textContent.trim().startsWith('📅'));
+        if (dueSp) dueSp.remove();
+      }
+    }
+  }
 }
 
 async function doSave() {
@@ -1869,9 +2000,17 @@ function openEdit(id) {
   document.getElementById('edit-category').value    = item.category || 'action';
   document.getElementById('edit-description').value = item.description || '';
   document.getElementById('edit-owner').value       = item.owner || '';
-  document.getElementById('edit-due').value         = item.dueDate || '';
+  document.getElementById('edit-tags').value        = (item.tags || []).join(', ');
+  document.getElementById('edit-start').value       = item.startDate || '';
   document.getElementById('edit-status').value      = item.status || 'open';
   document.getElementById('edit-notes').value       = item.notes || '';
+
+  const dueVal = item.dueDate || '';
+  const dueInput = document.getElementById('edit-due');
+  dueInput.value = isIsoDate(dueVal) ? dueVal : '';
+  dueInput.dataset.legacyValue = !isIsoDate(dueVal) ? dueVal : '';
+  document.getElementById('edit-due-hint').textContent =
+    (!isIsoDate(dueVal) && dueVal) ? `Current value: "${dueVal}"` : '';
 
   document.getElementById('edit-overlay').classList.add('visible');
 }
@@ -1882,11 +2021,14 @@ function closeEdit() {
 
 async function saveEdit() {
   const id = document.getElementById('edit-id').value;
+  const dueInput = document.getElementById('edit-due');
   const data = {
     category:    document.getElementById('edit-category').value,
     description: document.getElementById('edit-description').value.trim(),
     owner:       document.getElementById('edit-owner').value.trim() || null,
-    dueDate:     document.getElementById('edit-due').value.trim() || null,
+    tags:        document.getElementById('edit-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+    startDate:   document.getElementById('edit-start').value || null,
+    dueDate:     dueInput.value || dueInput.dataset.legacyValue || null,
     status:      document.getElementById('edit-status').value,
     notes:       document.getElementById('edit-notes').value.trim() || null,
   };
@@ -2113,6 +2255,12 @@ document.querySelectorAll('[data-filter-status]').forEach(btn => {
     state.filterStatus = btn.dataset.filterStatus;
     renderAll();
   });
+});
+
+// Sort dropdown
+document.getElementById('sort-select').addEventListener('change', e => {
+  state.sortBy = e.target.value;
+  renderItems();
 });
 
 // ─────────────────────────────────────────────
