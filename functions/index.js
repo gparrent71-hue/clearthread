@@ -1,11 +1,11 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
-const cors = require('cors')({ origin: true });
+const cors = require('cors')({ origin: '*' });
 
 admin.initializeApp();
 
 exports.callClaude = functions
-  .runWith({ secrets: ['ANTHROPIC_API_KEY'] })
+  .runWith({ secrets: ['ANTHROPIC_API_KEY'], timeoutSeconds: 300, memory: '512MB' })
   .https.onRequest((req, res) => {
     cors(req, res, async () => {
       if (req.method === 'OPTIONS') return res.status(204).send('');
