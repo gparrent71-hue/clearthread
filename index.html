@@ -587,6 +587,14 @@
         <div class="content-subtitle" id="view-subtitle">Loading…</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
+        <select id="sort-select" class="form-control" style="width:auto;font-size:13px;padding:6px 10px">
+          <option value="date-added">Date Added</option>
+          <option value="due-asc">Due Date ↑</option>
+          <option value="due-desc">Due Date ↓</option>
+          <option value="start-asc">Start Date ↑</option>
+          <option value="start-desc">Start Date ↓</option>
+          <option value="tag-az">Tag A→Z</option>
+        </select>
         <div class="bulk-bar" id="bulk-bar">
           <button class="btn btn-secondary" id="btn-select-all" onclick="selectAll()">Select All</button>
           <button class="btn btn-danger" id="btn-delete-selected" onclick="deleteSelected()" disabled>Delete Selected</button>
@@ -2169,6 +2177,12 @@ document.querySelectorAll('[data-filter-status]').forEach(btn => {
     state.filterStatus = btn.dataset.filterStatus;
     renderAll();
   });
+});
+
+// Sort dropdown
+document.getElementById('sort-select').addEventListener('change', e => {
+  state.sortBy = e.target.value;
+  renderItems();
 });
 
 // ─────────────────────────────────────────────
