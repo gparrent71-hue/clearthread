@@ -1885,11 +1885,34 @@ function renderPreview() {
         <div class="preview-item-desc">${escHtml(item.description)}</div>
         <div class="preview-item-meta">
           ${item.owner ? `<span>👤 ${escHtml(item.owner)}</span>` : ''}
-          ${item.dueDate ? `<span>📅 ${escHtml(item.dueDate)}</span>` : ''}
+          ${item.dueDate && !isIsoDate(item.dueDate) ? `<span>📅 ${escHtml(item.dueDate)}</span>` : ''}
           ${item.sourceSnippet ? `<span title="${escHtml(item.sourceSnippet)}">📌 has source</span>` : ''}
         </div>
+        <div id="preview-edit-${item._id}" class="preview-edit-panel" style="display:none">
+          <div>
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px;text-transform:uppercase;font-weight:600">Tags</label>
+            <input type="text" class="form-control" style="font-size:12px" placeholder="e.g. Q2, Project-X"
+              value="${item.tags ? item.tags.join(', ') : ''}"
+              oninput="updatePreviewItem(${item._id}, 'tags', this.value)">
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px;text-transform:uppercase;font-weight:600">Start Date</label>
+            <input type="date" class="form-control" style="font-size:12px"
+              value="${item.startDate || ''}"
+              oninput="updatePreviewItem(${item._id}, 'startDate', this.value)">
+          </div>
+          <div>
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px;text-transform:uppercase;font-weight:600">Due Date${item.dueDate && !isIsoDate(item.dueDate) ? ` <span style="font-weight:normal;color:var(--text-light)">(${escHtml(item.dueDate)})</span>` : ''}</label>
+            <input type="date" class="form-control" style="font-size:12px"
+              value="${isIsoDate(item.dueDate || '') ? item.dueDate : ''}"
+              oninput="updatePreviewItem(${item._id}, 'dueDate', this.value)">
+          </div>
+        </div>
       </div>
-      <button class="preview-delete" onclick="removePreviewItem(${item._id})" title="Remove this item">✕</button>
+      <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;padding-top:2px">
+        <button class="preview-delete" onclick="togglePreviewEdit(${item._id})" title="Add tags & dates" style="color:var(--text-muted)">✏</button>
+        <button class="preview-delete" onclick="removePreviewItem(${item._id})" title="Remove this item">✕</button>
+      </div>
     </div>
   `).join('');
 }
@@ -1900,6 +1923,22 @@ function removePreviewItem(id) {
   const actionBtn = document.getElementById('import-action');
   actionBtn.textContent = `Save ${state.previewItems.length} Item${state.previewItems.length !== 1 ? 's' : ''} to Dashboard`;
   document.getElementById('import-modal-title').textContent = `Review Extracted Items (${state.previewItems.length})`;
+}
+
+function togglePreviewEdit(id) {
+  const panel = document.getElementById(`preview-edit-${id}`);
+  if (!panel) return;
+  panel.style.display = panel.style.display === 'grid' ? 'none' : 'grid';
+}
+
+function updatePreviewItem(id, field, value) {
+  const item = state.previewItems.find(i => i._id === id);
+  if (!item) return;
+  if (field === 'tags') {
+    item.tags = value.split(',').map(t => t.trim()).filter(Boolean);
+  } else {
+    item[field] = value || null;
+  }
 }
 
 async function doSave() {
