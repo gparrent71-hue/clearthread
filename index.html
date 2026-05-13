@@ -457,6 +457,7 @@
 
     /* ── Preview item edit panel ── */
     .preview-edit-panel {
+      display: grid;
       margin-top: 10px; padding: 10px; background: #f8fafc;
       border-radius: 6px; border: 1px solid var(--border);
       grid-template-columns: 1fr 1fr 1fr; gap: 10px;
@@ -1939,7 +1940,7 @@ function removePreviewItem(id) {
 function togglePreviewEdit(id) {
   const panel = document.getElementById(`preview-edit-${id}`);
   if (!panel) return;
-  panel.style.display = panel.style.display === 'grid' ? 'none' : 'grid';
+  panel.style.display = panel.style.display === 'none' ? '' : 'none';
 }
 
 function updatePreviewItem(id, field, value) {
@@ -1949,6 +1950,13 @@ function updatePreviewItem(id, field, value) {
     item.tags = value.split(',').map(t => t.trim()).filter(Boolean);
   } else {
     item[field] = value || null;
+    if (field === 'dueDate') {
+      const meta = document.querySelector(`#preview-${id} .preview-item-meta`);
+      if (meta) {
+        const dueSp = [...meta.querySelectorAll('span')].find(s => s.textContent.trim().startsWith('📅'));
+        if (dueSp) dueSp.remove();
+      }
+    }
   }
 }
 
