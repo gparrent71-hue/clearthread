@@ -2310,42 +2310,48 @@ async function doSignIn() {
 }
 
 async function doCreateAccount() {
-  const email = document.getElementById('auth-create-email').value.trim();
-  const password = document.getElementById('auth-create-password').value;
-  const confirm = document.getElementById('auth-create-confirm').value;
-  const inviteCode = document.getElementById('auth-create-invite').value.trim().toUpperCase();
-  const errEl = document.getElementById('auth-create-error');
-  errEl.textContent = '';
-  if (password !== confirm) { errEl.textContent = 'Passwords do not match.'; return; }
-  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters.'; return; }
-  if (!inviteCode) { errEl.textContent = 'An invite code is required to create an account.'; return; }
-  let codeDoc;
+  const btn = document.getElementById('btn-create-account');
+  btn.disabled = true;
   try {
-    codeDoc = await db.collection('invite_codes').doc(inviteCode).get();
-  } catch (e) {
-    errEl.textContent = 'Could not validate invite code. Please try again.';
-    return;
-  }
-  if (!codeDoc.exists || codeDoc.data().used) {
-    errEl.textContent = "That invite code isn't valid or has already been used.";
-    return;
-  }
-  let userCredential;
-  try {
-    userCredential = await auth.createUserWithEmailAndPassword(email, password);
-  } catch (e) {
-    errEl.textContent = friendlyAuthError(e.code);
-    return;
-  }
-  try {
-    await db.collection('invite_codes').doc(inviteCode).update({
-      used: true,
-      usedBy: userCredential.user.uid,
-      usedByEmail: email,
-      usedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-  } catch (e) {
-    console.warn('Failed to mark invite code as used:', e);
+    const email = document.getElementById('auth-create-email').value.trim();
+    const password = document.getElementById('auth-create-password').value;
+    const confirm = document.getElementById('auth-create-confirm').value;
+    const inviteCode = document.getElementById('auth-create-invite').value.trim().toUpperCase();
+    const errEl = document.getElementById('auth-create-error');
+    errEl.textContent = '';
+    if (password !== confirm) { errEl.textContent = 'Passwords do not match.'; return; }
+    if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters.'; return; }
+    if (!inviteCode) { errEl.textContent = 'An invite code is required to create an account.'; return; }
+    let codeDoc;
+    try {
+      codeDoc = await db.collection('invite_codes').doc(inviteCode).get();
+    } catch (e) {
+      errEl.textContent = 'Could not validate invite code. Please try again.';
+      return;
+    }
+    if (!codeDoc.exists || codeDoc.data().used) {
+      errEl.textContent = "That invite code isn't valid or has already been used.";
+      return;
+    }
+    let userCredential;
+    try {
+      userCredential = await auth.createUserWithEmailAndPassword(email, password);
+    } catch (e) {
+      errEl.textContent = friendlyAuthError(e.code);
+      return;
+    }
+    try {
+      await db.collection('invite_codes').doc(inviteCode).update({
+        used: true,
+        usedBy: userCredential.user.uid,
+        usedByEmail: email,
+        usedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    } catch (e) {
+      console.warn('Failed to mark invite code as used:', e);
+    }
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -2406,6 +2412,7 @@ document.getElementById('link-to-signin-from-forgot').addEventListener('click', 
 // Submit on Enter key in auth inputs
 document.getElementById('auth-password').addEventListener('keydown', e => { if (e.key === 'Enter') doSignIn(); });
 document.getElementById('auth-create-confirm').addEventListener('keydown', e => { if (e.key === 'Enter') doCreateAccount(); });
+document.getElementById('auth-create-invite').addEventListener('keydown', e => { if (e.key === 'Enter') doCreateAccount(); });
 document.getElementById('auth-forgot-email').addEventListener('keydown', e => { if (e.key === 'Enter') doSendReset(); });
 </script>
 </body>
