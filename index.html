@@ -2099,7 +2099,8 @@ function closeSettings() {
 
 function generateCodeStr() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  return Array.from({length: 8}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(bytes, b => chars[b % chars.length]).join('');
 }
 
 async function generateInviteCode() {
@@ -2137,7 +2138,7 @@ function loadAdminCodes() {
       const code = doc.id;
       const created = d.createdAt ? formatDate(d.createdAt.toDate().toISOString().slice(0, 10)) : '—';
       const statusHtml = d.used
-        ? `<span class="code-status-used">Used by ${d.usedByEmail || d.usedBy} on ${d.usedAt ? formatDate(d.usedAt.toDate().toISOString().slice(0, 10)) : '—'}</span>`
+        ? `<span class="code-status-used">Used by ${escHtml(d.usedByEmail || d.usedBy || '')} on ${d.usedAt ? formatDate(d.usedAt.toDate().toISOString().slice(0, 10)) : '—'}</span>`
         : `<span style="color:var(--text-muted)">Unused</span>&nbsp;&nbsp;<button class="btn btn-secondary" style="padding:2px 8px;font-size:12px" onclick="deleteInviteCode('${code}')">Delete</button>`;
       return `<tr><td><code>${code}</code></td><td>${created}</td><td>${statusHtml}</td></tr>`;
     }).join('');
@@ -2333,10 +2334,13 @@ document.getElementById('btn-generate-code').addEventListener('click', generateI
 
 
 // Close overlays on backdrop click
-['import-overlay','edit-overlay','settings-overlay'].forEach(id => {
+['import-overlay','edit-overlay'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target.id === id) document.getElementById(id).classList.remove('visible');
   });
+});
+document.getElementById('settings-overlay').addEventListener('click', e => {
+  if (e.target.id === 'settings-overlay') closeSettings();
 });
 
 // Sidebar filters – category
