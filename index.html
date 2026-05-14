@@ -2478,7 +2478,43 @@ async function doSendReset() {
 async function doGoogleSignIn() {
   const provider = new firebase.auth.GoogleAuthProvider();
   try {
-    await auth.signInWithPopup(provider);
+    const result = await auth.signInWithPopup(provider);
+    if (result.additionalUserInfo && result.additionalUserInfo.isNewUser) {
+      const errEl = document.getElementById('auth-signin-error');
+      const raw = window.prompt('Enter your invite code to complete account creation:');
+      if (!raw || !raw.trim()) {
+        await result.user.delete();
+        await auth.signOut();
+        errEl.textContent = 'An invite code is required to create an account.';
+        return;
+      }
+      const code = raw.trim().toUpperCase();
+      let codeDoc;
+      try {
+        codeDoc = await db.collection('invite_codes').doc(code).get();
+      } catch (e) {
+        await result.user.delete();
+        await auth.signOut();
+        errEl.textContent = 'Could not validate invite code. Please try again.';
+        return;
+      }
+      if (!codeDoc.exists || codeDoc.data().used) {
+        await result.user.delete();
+        await auth.signOut();
+        errEl.textContent = "That invite code isn't valid or has already been used.";
+        return;
+      }
+      try {
+        await db.collection('invite_codes').doc(code).update({
+          used: true,
+          usedBy: result.user.uid,
+          usedByEmail: result.user.email,
+          usedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } catch (e) {
+        console.warn('Failed to mark invite code as used:', e);
+      }
+    }
   } catch (e) {
     document.getElementById('auth-signin-error').textContent = friendlyAuthError(e.code);
   }
